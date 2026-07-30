@@ -5,6 +5,7 @@
 #include "game_engine.h"
 #include <bitset>
 #include <vector>
+#include <memory>
 
 // ---- Aspetto del terreno (feature per AI) ----
 struct Aspect {
@@ -50,6 +51,52 @@ bool isPerfectClearTheoremSatisfied(int jlt_0_180_count, int o_count, int izs_pm
 // Evaluate perfect clear possibility using the theorem
 float evaluatePerfectClearPossibility(const BoardBits& board, 
                                        int jlt_0_180_count, int o_count, int izs_pm90_count);
+
+// ---- Spin Detection Polymorphism (T-Spin + Tetris) ----
+// 回転後の状態を表す列挙型
+enum class SpinType {
+    NONE,       // 通常配置
+    T_MINI,     // T-Spin Mini (0ライン)
+    T_SINGLE,   // T-Spin Single (1ライン)
+    T_DOUBLE,   // T-Spin Double (2ライン)
+    T_TRIPLE,   // T-Spin Triple (3ライン)
+    T_TETRIS,   // T-Spin Tetris (4ライン)
+    TETRIS      // 通常のテトリス (4ライン)
+};
+
+// 回転判定の基底クラス
+class SpinDetector {
+public:
+    virtual ~SpinDetector() = default;
+    virtual SpinType detect(const BoardBits& board, const MinoShape& shape, int x, int y, int rot) const = 0;
+    virtual float getScore(SpinType type, bool isBTB) const = 0;
+};
+
+// 具体的なT-Spin判定クラス
+class StandardSpinDetector : public SpinDetector {
+public:
+    SpinType detect(const BoardBits& board, const MinoShape& shape, int x, int y, int rot) const override;
+    float getScore(SpinType type, bool isBTB) const override;
+};
+
+// T-Spin評価マネージャー
+class SpinEvaluator {
+private:
+    std::unique_ptr<SpinDetector> detector;
+    bool considerBTB;
+
+public:
+    SpinEvaluator(bool btb = false);
+    
+    // T-Spinの可能性を評価
+    float evaluate(const BoardBits& board, const std::deque<PType>& next);
+    
+    // BTB状態を考慮
+    void setBTB(bool btb);
+    
+    // 具体的な配置のスピンタイプを取得
+    SpinType getSpinType(const BoardBits& board, PType pieceType, int x, int y, int rot) const;
+};
 
 // ---- Utilità ----
 std::bitset<30> GetTop3Rows(const BoardBits& board);

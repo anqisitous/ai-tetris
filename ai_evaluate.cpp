@@ -271,6 +271,148 @@ float evaluatePerfectClearPossibility(const BoardBits& board,
     }
 }
 
+// ===================================================================
+// Spin Detection Polymorphism (T-Spin + Tetris)
+// ===================================================================
+
+// ---- StandardSpinDetector Implementation ----
+SpinType StandardSpinDetector::detect(const BoardBits& board, const MinoShape& shape, int x, int y, int rot) const {
+    // 1. Check if this is a T piece
+    bool isTPiece = false;
+    for (int t = 0; t < 7; t++) {
+        if (&SHAPES[t][0] == &shape) {
+            isTPiece = (t == (int)PType::T);
+            break;
+        }
+    }
+    
+    // 2. For T piece: Check T-Spin
+    if (isTPiece) {
+        if (!isTSpin(board, x, y, rot)) {
+            return SpinType::NONE;
+        }
+        
+        // Simulate placement
+        BoardBits temp = board;
+        for (int r = 0; r < shape.height; ++r) {
+            int row = y + r;
+            if (row < 0 || row >= BOARD_H) continue;
+            uint16_t mask = shape.rows[r];
+            if (x >= 0) mask <<= x;
+            else mask >>= (-x);
+            temp[row] |= mask;
+        }
+        
+        int cleared = ClearLines(temp);
+        
+        // Determine T-Spin type
+        if (cleared == 0) return SpinType::T_MINI;
+        if (cleared == 1) return SpinType::T_SINGLE;
+        if (cleared == 2) return SpinType::T_DOUBLE;
+        if (cleared == 3) return SpinType::T_TRIPLE;
+        if (cleared == 4) return SpinType::T_TETRIS;
+        
+        return SpinType::NONE;
+    }
+    
+    // 3. For non-T pieces: Check if it results in Tetris (4 lines)
+    BoardBits temp = board;
+    for (int r = 0; r < shape.height; ++r) {
+        int row = y + r;
+        if (row < 0 || row >= BOARD_H) continue;
+        uint16_t mask = shape.rows[r];
+        if (x >= 0) mask <<= x;
+        else mask >>= (-x);
+        temp[row] |= mask;
+    }
+    
+    int cleared = ClearLines(temp);
+    if (cleared == 4) return SpinType::TETRIS;
+    
+    return SpinType::NONE;
+}
+
+float StandardSpinDetector::getScore(SpinType type, bool isBTB) const {
+    float score = 0.0f;
+    
+    switch (type) {
+        case SpinType::T_MINI:   score = 10.0f; break;
+        case SpinType::T_SINGLE: score = 30.0f; break;
+        case SpinType::T_DOUBLE: score = 60.0f; break;
+        case SpinType::T_TRIPLE: score = 100.0f; break;
+        case SpinType::T_TETRIS: score = 150.0f; break;  // T-Spin Tetris
+        case SpinType::TETRIS:  score = 120.0f; break;  // Regular Tetris
+        default: return 0.0f;
+    }
+    
+    // BTB (Back-to-Back) bonus
+    if (isBTB) {
+        score *= 1.5f;
+    }
+    
+    return score;
+}
+
+// ---- SpinEvaluator Implementation ----
+SpinEvaluator::SpinEvaluator(bool btb) 
+    : detector(std::make_unique<StandardSpinDetector>()), considerBTB(btb) {}
+
+SpinType SpinEvaluator::getSpinType(const BoardBits& board, PType pieceType, int x, int y, int rot) const {
+    const MinoShape& shape = SHAPES[(int)pieceType][rot];
+    return detector->detect(board, shape, x, y, rot);
+}
+
+float SpinEvaluator::evaluate(const BoardBits& board, const std::deque<PType>& next) {
+    float score = 0.0f;
+    
+    // 1. Evaluate all possible T-Spin positions for current board
+    for (int rot = 0; rot < 4; ++rot) {
+        const MinoShape& shape = SHAPES[(int)PType::T][rot];
+        
+        for (int x = -2; x < BOARD_W + 2; ++x) {
+            if (IsCollision(board, shape, x, 0)) continue;
+            int y = HardDropY(board, shape, x);
+            if (y < 0) continue;
+            
+            SpinType type = detector->detect(board, shape, x, y, rot);
+            score += detector->getScore(type, considerBTB);
+        }
+    }
+    
+    // 2. Bonus if T piece is coming soon in the next queue
+    for (int i = 0; i < std::min(3, (int)next.size()); ++i) {
+        if (next[i] == PType::T) {
+            score *= 1.3f;  // 10% bonus for each T in next 3 pieces
+            break;
+        }
+    }
+    
+    // 3. Evaluate Tetris (4-line clear) possibilities for all pieces
+    for (int pt = 0; pt < 7; ++pt) {
+        PType pieceType = (PType)pt;
+        for (int rot = 0; rot < 4; ++rot) {
+            const MinoShape& shape = SHAPES[pt][rot];
+            
+            for (int x = -2; x < BOARD_W + 2; ++x) {
+                if (IsCollision(board, shape, x, 0)) continue;
+                int y = HardDropY(board, shape, x);
+                if (y < 0) continue;
+                
+                SpinType type = detector->detect(board, shape, x, y, rot);
+                if (type == SpinType::TETRIS) {
+                    score += 80.0f;  // Bonus for Tetris possibility
+                }
+            }
+        }
+    }
+    
+    return score;
+}
+
+void SpinEvaluator::setBTB(bool btb) {
+    considerBTB = btb;
+}
+
 // ---- Estrai aspetto ----
 Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
                      const std::deque<PType>& next) {
@@ -302,6 +444,10 @@ Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
     
     // Add horizontal parity as a feature
     v.push_back(calculateHorizontalParity(board));
+    
+    // Add spin evaluation as a feature
+    SpinEvaluator evaluator(false);
+    v.push_back(evaluator.evaluate(board, next));
     
     return a;
 }

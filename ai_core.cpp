@@ -125,6 +125,9 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
     };
     std::vector<ScoredCandidate> scored;
     
+    // Create spin evaluator with BTB consideration
+    SpinEvaluator spinEvaluator(self.btb > 0);
+    
     for (auto& c : candidates) {
         float score = 0.0f;
         
@@ -134,6 +137,14 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         // Qualità del terreno risultante
         score += evaluateTerrainQuality(c.board);
         score += evaluateDoubleDaggerReadiness(c.board);
+        
+        // Spin evaluation (T-Spin + Tetris)
+        // Check if this placement results in a spin
+        SpinType spinType = spinEvaluator.getSpinType(self.board, self.curType, c.x, c.y, c.rot);
+        score += spinEvaluator.getScore(spinType, self.btb > 0);
+        
+        // Additional spin evaluation for the resulting board
+        score += spinEvaluator.evaluate(c.board, self.next) * 0.5f;
         
         // Horizontal parity check for perfect clear possibility
         int hParity = calculateHorizontalParity(c.board);
