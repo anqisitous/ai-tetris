@@ -135,6 +135,13 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         score += evaluateTerrainQuality(c.board);
         score += evaluateDoubleDaggerReadiness(c.board);
         
+        // Horizontal parity check for perfect clear possibility
+        int hParity = calculateHorizontalParity(c.board);
+        // Strong penalty if perfect clear is impossible due to horizontal parity
+        if (hParity % 4 == 1 || hParity % 4 == 3) {
+            score -= 500.0f;
+        }
+        
         // Bonus memoria pattern
         Aspect newAspect = extractAspect(c.board, 0, self.combo, self.next);
         PatternNeuron* match = state.patternMemory.findBestMatch(newAspect);

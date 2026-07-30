@@ -178,6 +178,13 @@ float evaluateTerrainQuality(const BoardBits& board) {
     // Premio TSD setups
     score += countTSDDoubleSetups(board) * 20.0f;
     
+    // Horizontal parity penalty for perfect clear impossibility
+    int hParity = calculateHorizontalParity(board);
+    // If horizontal parity is 1 or 3, perfect clear is impossible
+    if (hParity % 4 == 1 || hParity % 4 == 3) {
+        score -= 500.0f;  // Strong penalty for impossible perfect clear
+    }
+    
     return score;
 }
 
@@ -223,6 +230,47 @@ bool isCenterOpen(const BoardBits& board) {
     return (g1 >= 4.0f || g3 >= 4.0f) && g2 < std::min(g1, g3);
 }
 
+// ---- Horizontal Parity (横パリティ) ----
+// 各列のブロック数が奇数か偶数かをカウント
+// 横パリティ = 奇数の列の数
+int calculateHorizontalParity(const BoardBits& board) {
+    int oddColumns = 0;
+    for (int c = 0; c < BOARD_W; ++c) {
+        int count = 0;
+        for (int r = 0; r < BOARD_H; ++r) {
+            if (board[r] & (1 << c)) count++;
+        }
+        if (count % 2 != 0) oddColumns++;
+    }
+    return oddColumns;
+}
+
+// ---- Perfect Clear Theorem (パフェ定理) ----
+// 定理: [JLTが0か180度の個数] = O個数 + [IZS*{±90度どちらか}の個数] + 2n + 現在の横パリティ
+// This must hold modulo 2 for perfect clear to be possible
+bool isPerfectClearTheoremSatisfied(int jlt_0_180_count, int o_count, int izs_pm90_count, int horizontal_parity) {
+    // The theorem states: jlt_0_180 = o + izs_pm90 + 2n + hParity
+    // Modulo 2: jlt_0_180 % 2 == (o + izs_pm90 + hParity) % 2
+    // Since 2n % 2 = 0, we can ignore it
+    int leftSide = jlt_0_180_count % 2;
+    int rightSide = (o_count + izs_pm90_count + horizontal_parity) % 2;
+    return leftSide == rightSide;
+}
+
+// ---- Evaluate Perfect Clear Possibility using Theorem ----
+// Returns a score based on how close we are to satisfying the perfect clear theorem
+// Higher score means better chance for perfect clear
+float evaluatePerfectClearPossibility(const BoardBits& board, 
+                                       int jlt_0_180_count, int o_count, int izs_pm90_count) {
+    int hParity = calculateHorizontalParity(board);
+    
+    if (isPerfectClearTheoremSatisfied(jlt_0_180_count, o_count, izs_pm90_count, hParity)) {
+        return 100.0f;  // Perfect clear is possible
+    } else {
+        return -100.0f;  // Perfect clear is impossible
+    }
+}
+
 // ---- Estrai aspetto ----
 Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
                      const std::deque<PType>& next) {
@@ -251,6 +299,9 @@ Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
     v.push_back(isCenterOpen(board) ? 1.0f : 0.0f);
     v.push_back(countTSDDoubleSetups(board));
     v.push_back(combo > 0 ? 1.0f : 0.0f);
+    
+    // Add horizontal parity as a feature
+    v.push_back(calculateHorizontalParity(board));
     
     return a;
 }

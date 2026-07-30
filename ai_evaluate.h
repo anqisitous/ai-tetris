@@ -40,6 +40,17 @@ float evaluateDoubleDaggerReadiness(const BoardBits& board);
 float calculateParitySpectrum(const BoardBits& board);
 bool isCenterOpen(const BoardBits& board);
 
+// ---- Horizontal Parity (横パリティ) ----
+int calculateHorizontalParity(const BoardBits& board);
+
+// ---- Perfect Clear Theorem (パフェ定理) ----
+// 定理: [JLTが0か180度の個数] = O個数 + [IZS*{±90度どちらか}の個数] + 2n + 現在の横パリティ
+bool isPerfectClearTheoremSatisfied(int jlt_0_180_count, int o_count, int izs_pm90_count, int horizontal_parity);
+
+// Evaluate perfect clear possibility using the theorem
+float evaluatePerfectClearPossibility(const BoardBits& board, 
+                                       int jlt_0_180_count, int o_count, int izs_pm90_count);
+
 // ---- Utilità ----
 std::bitset<30> GetTop3Rows(const BoardBits& board);
 std::bitset<30> GetRows(const BoardBits& board, int startRow, int endRow);
