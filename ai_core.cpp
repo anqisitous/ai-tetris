@@ -125,12 +125,12 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
     };
     std::vector<ScoredCandidate> scored;
     
-    // Create spin evaluator with BTB consideration
-    SpinEvaluator spinEvaluator(self.btb > 0);
-    
     // Check if we have I or T in hold
     bool hasHoldI = (self.hold == PType::I);
     bool hasHoldT = (self.hold == PType::T);
+    
+    // Create spin evaluator with BTB consideration
+    SpinEvaluator spinEvaluator(self.btb > 0);
     
     for (auto& c : candidates) {
         float score = 0.0f;
@@ -151,6 +151,9 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         
         // New hole evaluation with reachable space analysis
         score += evaluateTerrainWithHoles(c.board, self.next, hasHoldI, hasHoldT);
+        
+        // Hole filling evaluation - can we fill holes with current/next/hold pieces?
+        score += evaluateHoleFilling(c.board, self.next, hasHoldI, hasHoldT, self.curType);
         
         // Horizontal parity check for perfect clear possibility
         int hParity = calculateHorizontalParity(c.board);

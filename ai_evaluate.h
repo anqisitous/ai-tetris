@@ -41,6 +41,10 @@ namespace EvalWeights {
     
     // パリティ評価
     constexpr float PARITY_PENALTY   = 500.0f;
+    
+    // 穴を埋めるピースのボーナス
+    constexpr float HOLE_FILL_BONUS   = 30.0f;
+    constexpr float PERFECT_FILL_BONUS = 50.0f;
 }
 
 // ============================================================
@@ -84,6 +88,15 @@ struct TetrisWellEvaluation {
     float completeness;   // 完成度（0.0 ~ 1.0）
     float accessibility;  // 到達可能性
     float score;          // 総評価スコア
+};
+
+// ============================================================
+// 穴を埋めるピースの評価
+// ============================================================
+struct HoleFillEvaluation {
+    bool canFill;         // 穴を埋められるか
+    bool isPerfectFill;   // 完全に埋められるか
+    float fillScore;      // 埋めるスコア
 };
 
 // ---- Aspetto del terreno (feature per AI) ----
@@ -210,6 +223,14 @@ float evaluatePostClear(const BoardBits& board);
 
 // 全てを統合した地形評価
 float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI, bool hasHoldT);
+
+// ---- Hole Filling Evaluation ----
+// 穴を埋めるピースの判定
+HoleFillEvaluation canFillHoleWithPiece(const ConnectedComponent& hole, PType pieceType);
+
+// 穴を埋める評価
+float evaluateHoleFilling(const BoardBits& board, const std::deque<PType>& next, 
+                         bool hasHoldI, bool hasHoldT, PType currentPiece);
 
 // ---- Utilità ----
 std::bitset<30> GetTop3Rows(const BoardBits& board);

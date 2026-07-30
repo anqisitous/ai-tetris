@@ -847,6 +847,146 @@ float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& 
     return score;
 }
 
+// ---- 穴を埋めるピースの判定 ----
+HoleFillEvaluation canFillHoleWithPiece(const ConnectedComponent& hole, PType pieceType) {
+    HoleFillEvaluation eval;
+    eval.canFill = false;
+    eval.isPerfectFill = false;
+    eval.fillScore = 0.0f;
+
+    // 穴の幅と高さ
+    int holeWidth = hole.width;
+    int holeHeight = hole.height;
+
+    // ピースの形状を取得
+    const MinoShape& shape = SHAPES[static_cast<int>(pieceType)][0]; // 0度回転
+
+    // ピースの幅と高さ
+    int pieceWidth = 0;
+    int pieceHeight = shape.height;
+    for (int r = 0; r < shape.height; ++r) {
+        uint16_t row = shape.rows[r];
+        int rowWidth = 0;
+        while (row) {
+            rowWidth++;
+            row >>= 1;
+        }
+        pieceWidth = std::max(pieceWidth, rowWidth);
+    }
+
+    // 穴を埋められるかを判定
+    switch (pieceType) {
+        case PType::I:
+            // Iピース: 幅4の穴を埋められる
+            if (holeWidth == 4 && holeHeight >= 1) {
+                eval.canFill = true;
+                // 穴の高さが4以上で完全に埋められる
+                if (holeHeight >= 4) {
+                    eval.isPerfectFill = true;
+                    eval.fillScore = EvalWeights::PERFECT_FILL_BONUS;
+                } else {
+                    eval.fillScore = EvalWeights::HOLE_FILL_BONUS * holeHeight;
+                }
+            }
+            break;
+
+        case PType::O:
+            // Oピース: 2x2の穴を埋められる
+            if (holeWidth >= 2 && holeHeight >= 2) {
+                eval.canFill = true;
+                // 穴がちょうど2x2の場合は完全に埋められる
+                if (holeWidth == 2 && holeHeight == 2) {
+                    eval.isPerfectFill = true;
+                    eval.fillScore = EvalWeights::PERFECT_FILL_BONUS;
+                } else {
+                    eval.fillScore = EvalWeights::HOLE_FILL_BONUS * 2.0f;
+                }
+            }
+            break;
+
+        case PType::T:
+        case PType::L:
+        case PType::J:
+        case PType::S:
+        case PType::Z:
+            // これらのピース: 幅3の穴を埋められる
+            if (holeWidth >= 2 && holeHeight >= 1) {
+                eval.canFill = true;
+                // 穴の形状に合っているかをチェック
+                // 簡易判定: 幅が2-3で高さが1-2の場合
+                if (holeWidth <= 3 && holeHeight <= 2) {
+                    eval.fillScore = EvalWeights::HOLE_FILL_BONUS * 1.5f;
+                } else {
+                    eval.fillScore = EvalWeights::HOLE_FILL_BONUS;
+                }
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return eval;
+}
+
+// ---- 穴を埋める評価 ----
+float evaluateHoleFilling(const BoardBits& board, const std::deque<PType>& next, 
+                         bool hasHoldI, bool hasHoldT, PType currentPiece) {
+    auto info = analyzeReachableSpaces(board);
+    float totalScore = 0.0f;
+
+    // 現在のピースで穴を埋められるか
+    for (const auto& hole : info.otherHoles) {
+        auto fillEval = canFillHoleWithPiece(hole, currentPiece);
+        if (fillEval.canFill) {
+            totalScore += fillEval.fillScore;
+            if (fillEval.isPerfectFill) {
+                totalScore += EvalWeights::PERFECT_FILL_BONUS;
+            }
+        }
+    }
+
+    // 次のピースで穴を埋められるか
+    for (int i = 0; i < std::min(2, static_cast<int>(next.size())); ++i) {
+        PType nextPiece = next[i];
+        for (const auto& hole : info.otherHoles) {
+            auto fillEval = canFillHoleWithPiece(hole, nextPiece);
+            if (fillEval.canFill) {
+                totalScore += fillEval.fillScore * 0.7f;  // 次のピースは少し割引
+                if (fillEval.isPerfectFill) {
+                    totalScore += EvalWeights::PERFECT_FILL_BONUS * 0.7f;
+                }
+            }
+        }
+    }
+
+    // Holdにあるピースで穴を埋められるか
+    if (hasHoldI) {
+        PType holdPiece = PType::I;
+        for (const auto& hole : info.otherHoles) {
+            auto fillEval = canFillHoleWithPiece(hole, holdPiece);
+            if (fillEval.canFill) {
+                totalScore += fillEval.fillScore * 0.5f;  // Holdはさらに割引
+                if (fillEval.isPerfectFill) {
+                    totalScore += EvalWeights::PERFECT_FILL_BONUS * 0.5f;
+                }
+            }
+        }
+    }
+
+    if (hasHoldT) {
+        PType holdPiece = PType::T;
+        for (const auto& hole : info.otherHoles) {
+            auto fillEval = canFillHoleWithPiece(hole, holdPiece);
+            if (fillEval.canFill) {
+                totalScore += fillEval.fillScore * 0.5f;
+            }
+        }
+    }
+
+    return totalScore;
+}
+
 // ---- Estrai aspetto ----
 Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
                      const std::deque<PType>& next) {
