@@ -6,6 +6,85 @@
 #include <bitset>
 #include <vector>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <queue>
+
+// ============================================================
+// 評価用の重み定数
+// ============================================================
+namespace EvalWeights {
+    // 穴の評価
+    constexpr float HOLE_AREA        = 8.0f;
+    constexpr float HOLE_DEPTH       = 3.0f;
+    constexpr float HOLE_COVERED     = 5.0f;
+    constexpr float HOLE_SHAPE_BASE  = 10.0f;
+    
+    // テトリスWellの評価（非線形）
+    constexpr float WELL_BASE_VALUE   = 80.0f;  // 深さ4の基礎価値
+    constexpr float WELL_DEPTH_MARGIN = 10.0f;  // 深さ1増えるごとの追加価値
+    constexpr int   WELL_MIN_DEPTH    = 4;      // テトリス可能な最小深さ
+    constexpr int   WELL_MAX_DEPTH    = 8;      // 最大価値に達する深さ
+    constexpr float WELL_I_BONUS      = 50.0f;
+    
+    // TSDの評価
+    constexpr float TSD_SCORE        = 100.0f;
+    constexpr float TSS_SCORE        = 50.0f;
+    constexpr float TST_SCORE        = 150.0f;
+    
+    // 地形（Surface）の評価
+    constexpr float VARIANCE_PENALTY = 2.0f;
+    constexpr float CENTER_LOW_BONUS = 5.0f;
+    
+    // ライン消去後の評価
+    constexpr float CLEAR_BONUS      = 20.0f;
+    
+    // パリティ評価
+    constexpr float PARITY_PENALTY   = 500.0f;
+}
+
+// ============================================================
+// 到達可能空間の連結成分
+// ============================================================
+struct ConnectedComponent {
+    int left;    // 左端
+    int right;   // 右端
+    int top;     // 一番上
+    int bottom;  // 一番下
+    int width;   // 幅
+    int height;  // 高さ
+    std::vector<std::pair<int, int>> cells;  // 含まれるマス
+};
+
+// ============================================================
+// 到達可能空間の解析結果
+// ============================================================
+struct ReachableSpaceInfo {
+    std::vector<ConnectedComponent> components;
+    std::vector<ConnectedComponent> tetrisWells;
+    std::vector<ConnectedComponent> otherHoles;
+};
+
+// ============================================================
+// 穴の評価構造体
+// ============================================================
+struct HoleEvaluation {
+    float area;          // 面積（マス数）
+    float maxDepth;      // 最大深さ
+    float coveredCells;  // 上に覆われているセル数
+    float shapePenalty;  // 形状ペナルティ
+    float totalScore;    // 総評価スコア
+};
+
+// ============================================================
+// テトリスの穴（Well）の評価構造体
+// ============================================================
+struct TetrisWellEvaluation {
+    float depth;          // 井戸の深さ（連続した実際の深さ）
+    float completeness;   // 完成度（0.0 ~ 1.0）
+    float accessibility;  // 到達可能性
+    float score;          // 総評価スコア
+};
 
 // ---- Aspetto del terreno (feature per AI) ----
 struct Aspect {
@@ -97,6 +176,40 @@ public:
     // 具体的な配置のスピンタイプを取得
     SpinType getSpinType(const BoardBits& board, PType pieceType, int x, int y, int rot) const;
 };
+
+// ---- Reachable Space Analysis ----
+// 到達可能な空マスをBFSで探索
+std::vector<std::vector<bool>> findReachableSpaces(const BoardBits& board);
+
+// 連結成分を抽出
+std::vector<ConnectedComponent> findConnectedComponents(const std::vector<std::vector<bool>>& reachable);
+
+// 到達可能空間を解析
+ReachableSpaceInfo analyzeReachableSpaces(const BoardBits& board);
+
+// 一番目に低い開いている穴を特定
+ConnectedComponent getLowestReachableHole(const std::vector<ConnectedComponent>& holes);
+
+// 穴を評価
+HoleEvaluation evaluateHole(const ConnectedComponent& comp, const BoardBits& board);
+
+// テトリスの穴（Well）の評価
+TetrisWellEvaluation evaluateTetrisWell(const ConnectedComponent& comp, const BoardBits& board);
+
+// 全ての穴を評価
+float evaluateAllHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI);
+
+// TSD候補を評価
+float evaluateTSDCandidates(const BoardBits& board, const std::deque<PType>& next, bool hasHoldT);
+
+// 地形（Surface）の評価
+float evaluateSurface(const BoardBits& board);
+
+// ライン消去後の維持
+float evaluatePostClear(const BoardBits& board);
+
+// 全てを統合した地形評価
+float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI, bool hasHoldT);
 
 // ---- Utilità ----
 std::bitset<30> GetTop3Rows(const BoardBits& board);

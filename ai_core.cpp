@@ -128,6 +128,10 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
     // Create spin evaluator with BTB consideration
     SpinEvaluator spinEvaluator(self.btb > 0);
     
+    // Check if we have I or T in hold
+    bool hasHoldI = (self.hold == PType::I);
+    bool hasHoldT = (self.hold == PType::T);
+    
     for (auto& c : candidates) {
         float score = 0.0f;
         
@@ -139,18 +143,19 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         score += evaluateDoubleDaggerReadiness(c.board);
         
         // Spin evaluation (T-Spin + Tetris)
-        // Check if this placement results in a spin
         SpinType spinType = spinEvaluator.getSpinType(self.board, self.curType, c.x, c.y, c.rot);
         score += spinEvaluator.getScore(spinType, self.btb > 0);
         
         // Additional spin evaluation for the resulting board
         score += spinEvaluator.evaluate(c.board, self.next) * 0.5f;
         
+        // New hole evaluation with reachable space analysis
+        score += evaluateTerrainWithHoles(c.board, self.next, hasHoldI, hasHoldT);
+        
         // Horizontal parity check for perfect clear possibility
         int hParity = calculateHorizontalParity(c.board);
-        // Strong penalty if perfect clear is impossible due to horizontal parity
         if (hParity % 4 == 1 || hParity % 4 == 3) {
-            score -= 500.0f;
+            score -= EvalWeights::PARITY_PENALTY;
         }
         
         // Bonus memoria pattern

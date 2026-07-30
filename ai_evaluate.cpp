@@ -4,6 +4,7 @@
 #include "ai_evaluate.h"
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 // ---- Costanti per gruppi di colonne 1-2-4-2-1 ----
 constexpr int COL_GROUP[10] = {0, 1, 1, 2, 2, 2, 2, 3, 3, 4};
@@ -411,6 +412,439 @@ float SpinEvaluator::evaluate(const BoardBits& board, const std::deque<PType>& n
 
 void SpinEvaluator::setBTB(bool btb) {
     considerBTB = btb;
+}
+
+// ===================================================================
+// Reachable Space Analysis
+// ===================================================================
+
+// ---- 到達可能な空マスをBFSで探索 ----
+std::vector<std::vector<bool>> findReachableSpaces(const BoardBits& board) {
+    std::vector<std::vector<bool>> reachable(BOARD_H, std::vector<bool>(BOARD_W, false));
+    std::queue<std::pair<int, int>> q;
+
+    // 一番上の行（row=0）の空マスから開始
+    for (int c = 0; c < BOARD_W; ++c) {
+        if (!(board[0] & (1 << c))) {
+            reachable[0][c] = true;
+            q.push({0, c});
+        }
+    }
+
+    // BFSで到達可能な空マスを探索
+    const int dx[] = {0, 0, -1, 1};
+    const int dy[] = {-1, 1, 0, 0};
+
+    while (!q.empty()) {
+        auto [r, c] = q.front();
+        q.pop();
+
+        for (int i = 0; i < 4; ++i) {
+            int nr = r + dy[i];
+            int nc = c + dx[i];
+
+            if (nr < 0 || nr >= BOARD_H || nc < 0 || nc >= BOARD_W) continue;
+            if (reachable[nr][nc]) continue;
+            if (board[nr] & (1 << nc)) continue;  // ブロックがある
+
+            reachable[nr][nc] = true;
+            q.push({nr, nc});
+        }
+    }
+
+    return reachable;
+}
+
+// ---- 連結成分を抽出 ----
+std::vector<ConnectedComponent> findConnectedComponents(const std::vector<std::vector<bool>>& reachable) {
+    std::vector<std::vector<bool>> visited(BOARD_H, std::vector<bool>(BOARD_W, false));
+    std::vector<ConnectedComponent> components;
+
+    for (int r = 0; r < BOARD_H; ++r) {
+        for (int c = 0; c < BOARD_W; ++c) {
+            if (reachable[r][c] && !visited[r][c]) {
+                // 新しい連結成分を発見
+                ConnectedComponent comp;
+                comp.left = c;
+                comp.right = c;
+                comp.top = r;
+                comp.bottom = r;
+
+                std::queue<std::pair<int, int>> q;
+                q.push({r, c});
+                visited[r][c] = true;
+
+                while (!q.empty()) {
+                    auto [cr, cc] = q.front();
+                    q.pop();
+                    comp.cells.push_back({cr, cc});
+
+                    // 境界を更新
+                    comp.left = std::min(comp.left, cc);
+                    comp.right = std::max(comp.right, cc);
+                    comp.top = std::min(comp.top, cr);
+                    comp.bottom = std::max(comp.bottom, cr);
+
+                    // 4方向に探索
+                    const int dx[] = {0, 0, -1, 1};
+                    const int dy[] = {-1, 1, 0, 0};
+
+                    for (int i = 0; i < 4; ++i) {
+                        int nr = cr + dy[i];
+                        int nc = cc + dx[i];
+
+                        if (nr < 0 || nr >= BOARD_H || nc < 0 || nc >= BOARD_W) continue;
+                        if (!reachable[nr][nc] || visited[nr][nc]) continue;
+
+                        visited[nr][nc] = true;
+                        q.push({nr, nc});
+                    }
+                }
+
+                comp.width = comp.right - comp.left + 1;
+                comp.height = comp.bottom - comp.top + 1;
+                components.push_back(comp);
+            }
+        }
+    }
+
+    return components;
+}
+
+// ---- 到達可能空間を解析 ----
+ReachableSpaceInfo analyzeReachableSpaces(const BoardBits& board) {
+    auto reachable = findReachableSpaces(board);
+    auto components = findConnectedComponents(reachable);
+
+    ReachableSpaceInfo info;
+    info.components = components;
+
+    // テトリスの穴とその他の穴を分類
+    for (const auto& comp : components) {
+        // 列ごとのセル情報を構築
+        std::unordered_map<int, std::pair<int, int>> colRange;
+        std::unordered_map<int, std::unordered_set<int>> colCells;
+        
+        for (const auto& [r, c] : comp.cells) {
+            if (colRange.find(c) == colRange.end()) {
+                colRange[c] = {r, r};
+            } else {
+                colRange[c].first = std::min(colRange[c].first, r);
+                colRange[c].second = std::max(colRange[c].second, r);
+            }
+            colCells[c].insert(r);
+        }
+        
+        // 各列で連続性をチェックし、最大の連続深さを求める
+        int maxContinuousDepth = 0;
+        for (const auto& [c, range] : colRange) {
+            int minR = range.first;
+            int maxR = range.second;
+            bool isContinuous = true;
+            
+            for (int r = minR; r <= maxR; ++r) {
+                if (colCells[c].find(r) == colCells[c].end()) {
+                    isContinuous = false;
+                    break;
+                }
+            }
+            
+            if (isContinuous) {
+                maxContinuousDepth = std::max(maxContinuousDepth, maxR - minR + 1);
+            }
+        }
+        
+        // テトリスの穴かどうかを判定
+        if (comp.width == 1 && maxContinuousDepth >= EvalWeights::WELL_MIN_DEPTH) {
+            info.tetrisWells.push_back(comp);
+        } else if (comp.height >= 1) {  // 穴（高さ1以上）
+            info.otherHoles.push_back(comp);
+        }
+    }
+
+    return info;
+}
+
+// ---- 一番目に低い開いている穴を特定 ----
+ConnectedComponent getLowestReachableHole(const std::vector<ConnectedComponent>& holes) {
+    if (holes.empty()) {
+        return ConnectedComponent{0, 0, 0, 0, 0, 0, {}};
+    }
+
+    // 一番上（topが最小）の穴を返す
+    auto lowest = *std::min_element(holes.begin(), holes.end(),
+        [](const ConnectedComponent& a, const ConnectedComponent& b) {
+            return a.top < b.top;
+        });
+
+    return lowest;
+}
+
+// ---- 穴を評価 ----
+HoleEvaluation evaluateHole(const ConnectedComponent& comp, const BoardBits& board) {
+    HoleEvaluation eval;
+
+    // 面積
+    eval.area = static_cast<float>(comp.cells.size());
+
+    // 最大深さ（一番下の行 - 一番上の行 + 1）
+    eval.maxDepth = static_cast<float>(comp.bottom - comp.top + 1);
+
+    // 上に覆われているセル数（穴の上にブロックがあるか）
+    eval.coveredCells = 0.0f;
+    for (const auto& [r, c] : comp.cells) {
+        if (r > 0 && (board[r - 1] & (1 << c))) {
+            eval.coveredCells += 1.0f;
+        }
+    }
+
+    // 形状ペナルティ（幅が広いほど埋めにくい）
+    if (comp.width >= 3) {
+        eval.shapePenalty = static_cast<float>(comp.width - 2) * EvalWeights::HOLE_SHAPE_BASE;
+    } else {
+        eval.shapePenalty = 0.0f;
+    }
+
+    // 総評価スコア
+    eval.totalScore = eval.area * EvalWeights::HOLE_AREA
+                    + eval.maxDepth * EvalWeights::HOLE_DEPTH
+                    + eval.coveredCells * EvalWeights::HOLE_COVERED
+                    + eval.shapePenalty;
+
+    return eval;
+}
+
+// ---- テトリスの穴（Well）の評価 ----
+TetrisWellEvaluation evaluateTetrisWell(const ConnectedComponent& comp, const BoardBits& board) {
+    TetrisWellEvaluation eval;
+
+    // 列ごとのセル情報を構築
+    std::unordered_map<int, std::pair<int, int>> colRange;
+    std::unordered_map<int, std::unordered_set<int>> colCells;
+    
+    for (const auto& [r, c] : comp.cells) {
+        if (colRange.find(c) == colRange.end()) {
+            colRange[c] = {r, r};
+        } else {
+            colRange[c].first = std::min(colRange[c].first, r);
+            colRange[c].second = std::max(colRange[c].second, r);
+        }
+        colCells[c].insert(r);
+    }
+    
+    // 各列で連続性をチェックし、最大の連続深さを求める
+    int maxContinuousDepth = 0;
+    for (const auto& [c, range] : colRange) {
+        int minR = range.first;
+        int maxR = range.second;
+        bool isContinuous = true;
+        
+        for (int r = minR; r <= maxR; ++r) {
+            if (colCells[c].find(r) == colCells[c].end()) {
+                isContinuous = false;
+                break;
+            }
+        }
+        
+        if (isContinuous) {
+            maxContinuousDepth = std::max(maxContinuousDepth, maxR - minR + 1);
+        }
+    }
+    
+    eval.depth = static_cast<float>(maxContinuousDepth);
+
+    // 完成度の評価
+    if (comp.width == 1 && maxContinuousDepth >= EvalWeights::WELL_MIN_DEPTH) {
+        eval.completeness = 1.0f;
+    } else if (comp.width == 1 && maxContinuousDepth >= 2) {
+        eval.completeness = 0.5f + (maxContinuousDepth - 2) * 0.25f;
+    } else {
+        eval.completeness = 0.0f;
+    }
+
+    // 到達可能性（既にBFSで到達可能なものだけなので1.0）
+    eval.accessibility = 1.0f;
+
+    // 非線形なスコア計算
+    int cappedDepth = std::min(maxContinuousDepth, EvalWeights::WELL_MAX_DEPTH);
+    float depthValue;
+    if (cappedDepth >= EvalWeights::WELL_MIN_DEPTH) {
+        depthValue = EvalWeights::WELL_BASE_VALUE
+                   + static_cast<float>(cappedDepth - EvalWeights::WELL_MIN_DEPTH) * EvalWeights::WELL_DEPTH_MARGIN;
+    } else {
+        // 4未満の場合は比例配分
+        depthValue = static_cast<float>(cappedDepth) * (EvalWeights::WELL_BASE_VALUE / static_cast<float>(EvalWeights::WELL_MIN_DEPTH));
+    }
+    
+    eval.score = eval.completeness * eval.accessibility * depthValue;
+
+    return eval;
+}
+
+// ---- 全ての穴を評価 ----
+float evaluateAllHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI) {
+    auto info = analyzeReachableSpaces(board);
+
+    float totalScore = 0.0f;
+
+    // Iピースが利用可能かどうかを事前に判定
+    bool hasI = hasHoldI;
+    for (int i = 0; i < std::min(3, static_cast<int>(next.size())); ++i) {
+        if (next[i] == PType::I) {
+            hasI = true;
+            break;
+        }
+    }
+
+    // テトリスの穴を評価
+    for (const auto& well : info.tetrisWells) {
+        auto wellEval = evaluateTetrisWell(well, board);
+        totalScore += wellEval.score;
+    }
+
+    // IピースボーナスはWellが存在する場合に一度だけ加算
+    if (hasI && !info.tetrisWells.empty()) {
+        totalScore += EvalWeights::WELL_I_BONUS;
+    }
+
+    // その他の穴を評価（ペナルティとして減算）
+    for (const auto& hole : info.otherHoles) {
+        auto holeEval = evaluateHole(hole, board);
+        totalScore -= holeEval.totalScore;
+    }
+
+    return totalScore;
+}
+
+// ---- TSD候補を評価 ----
+float evaluateTSDCandidates(const BoardBits& board, const std::deque<PType>& next, bool hasHoldT) {
+    float score = 0.0f;
+
+    // Tピースが次に来るか、またはHoldにあるか
+    bool hasT = hasHoldT;
+    for (int i = 0; i < std::min(3, static_cast<int>(next.size())); ++i) {
+        if (next[i] == PType::T) {
+            hasT = true;
+            break;
+        }
+    }
+
+    if (!hasT) return 0.0f;  // TピースがなければTSDは不可能
+
+    // TSDのセットアップを探す
+    for (int rot = 0; rot < 4; ++rot) {
+        const MinoShape& shape = SHAPES[static_cast<int>(PType::T)][rot];
+
+        for (int x = -2; x < BOARD_W + 2; ++x) {
+            int y = HardDropY(board, shape, x);
+            if (y < 0) continue;
+
+            // T-Spinかどうか
+            if (!isTSpin(board, x, y, rot)) continue;
+
+            // ボードをシミュレート
+            BoardBits temp = board;
+            for (int r = 0; r < shape.height; ++r) {
+                int row = y + r;
+                if (row < 0 || row >= BOARD_H) continue;
+                uint16_t mask = shape.rows[r];
+                if (x >= 0) {
+                    mask <<= x;
+                } else {
+                    mask >>= (-x);
+                }
+                temp[row] |= mask;
+            }
+
+            // ライン消去数を確認してスコア加算
+            int cleared = ClearLines(temp);
+            if (cleared == 2) {
+                score += EvalWeights::TSD_SCORE;  // TSD
+            } else if (cleared == 1) {
+                score += EvalWeights::TSS_SCORE;  // T-Spin Single
+            } else if (cleared == 3) {
+                score += EvalWeights::TST_SCORE;  // T-Spin Triple
+            }
+        }
+    }
+
+    return score;
+}
+
+// ---- 地形（Surface）の評価 ----
+float evaluateSurface(const BoardBits& board) {
+    float score = 0.0f;
+
+    // 各列の高さを取得
+    std::vector<int> heights;
+    heights.reserve(BOARD_W);
+    for (int c = 0; c < BOARD_W; ++c) {
+        heights.push_back(getColumnHeight(board, c));
+    }
+
+    // 高さのばらつきを評価
+    float sum = std::accumulate(heights.begin(), heights.end(), 0.0f);
+    float avgHeight = sum / static_cast<float>(BOARD_W);
+    
+    float variance = 0.0f;
+    for (int h : heights) {
+        float diff = static_cast<float>(h) - avgHeight;
+        variance += diff * diff;
+    }
+    variance /= static_cast<float>(BOARD_W);
+
+    // ばらつきが小さいほどボーナス
+    score -= variance * EvalWeights::VARIANCE_PENALTY;
+
+    // 中央の列が低いほどボーナス
+    int mid = BOARD_W / 2;
+    int centerHeight = (heights[mid - 1] + heights[mid]) / 2;
+    if (centerHeight < static_cast<int>(avgHeight)) {
+        score += (avgHeight - static_cast<float>(centerHeight)) * EvalWeights::CENTER_LOW_BONUS;
+    }
+
+    return score;
+}
+
+// ---- ライン消去後の維持 ----
+float evaluatePostClear(const BoardBits& board) {
+    BoardBits temp = board;
+    int cleared = ClearLines(temp);
+
+    // ライン消去が発生しない場合は評価しない
+    if (cleared == 0) return 0.0f;
+
+    // ライン消去後の地形を評価
+    float postClearScore = evaluateSurface(temp);
+
+    // ライン消去が多いほどボーナス
+    if (cleared >= 2) {
+        postClearScore += static_cast<float>(cleared) * EvalWeights::CLEAR_BONUS;
+    }
+
+    return postClearScore;
+}
+
+// ---- 全てを統合した地形評価 ----
+float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI, bool hasHoldT) {
+    float score = 0.0f;
+
+    // 穴の評価
+    score += evaluateAllHoles(board, next, hasHoldI);
+
+    // TSD候補の評価
+    score += evaluateTSDCandidates(board, next, hasHoldT);
+
+    // 地形の評価
+    score += evaluateSurface(board);
+
+    // 横パリティの評価
+    int hParity = calculateHorizontalParity(board);
+    if (hParity % 4 == 1 || hParity % 4 == 3) {
+        score -= EvalWeights::PARITY_PENALTY;  // パフェ不可能
+    }
+
+    return score;
 }
 
 // ---- Estrai aspetto ----
