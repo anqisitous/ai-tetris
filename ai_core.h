@@ -61,6 +61,40 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp);
 void executeAI(PlayerState& ps, AIAction& act, double dt, double das, double arr);
 AIAction makeAction(const PlacementResult& best, bool usedHold);
 
+// ---- Valutazione di un singolo piazzamento (usata da decideAI e beam search) ----
+// beforeBoard: 配置前の盤面（T-Spin判定に必要）
+// curType: 配置するミノの種類（T-Spin判定に必要）
+float evaluateCandidate(AIState& state, const PlacementResult& c,
+                         const BoardBits& beforeBoard, PType curType,
+                         const std::deque<PType>& next,
+                         PType hold, int btb, int combo);
+
+// ---- Beam Search ----
+// 現在の盤面から複数手先まで探索し、最初の一手を決定する。
+struct BeamNode {
+    BoardBits board;              // この時点の盤面
+    std::deque<PType> next;       // 残りネクストキュー（先頭から消費）
+    PType hold;                   // 保持中のミノ
+    bool canHold;                 // ホールド使用可能か
+    int btb;                      // Back-to-Back カウント
+    int combo;                    // コンボ数
+    float score = 0.0f;           // ここまでの累積評価スコア
+
+    // ルート直下（1手目）の情報。最終的な行動選択に使う。
+    bool hasFirstMove = false;
+    int firstX = 0, firstY = 0, firstRot = 0;
+    bool firstUsedHold = false;
+    PlacementResult firstResult{};
+};
+
+// beamWidth: 各深さで残すノード数
+// searchDepth: 何手先まで読むか（1なら decideAI の単発評価と同等）
+BeamNode beamSearch(AIState& state, PlayerState& self,
+                     int beamWidth = 20, int searchDepth = 3);
+
+// beamSearch の結果から AIAction を組み立てる
+AIAction makeActionFromBeam(const BeamNode& node);
+
 // ---- Apprendimento ----
 void learnFromPlacement(AIState& state, const Aspect& before, 
                          const Aspect& after, float reward);

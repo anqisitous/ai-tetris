@@ -369,6 +369,11 @@ SpinType SpinEvaluator::getSpinType(const BoardBits& board, PType pieceType, int
     return detector->detect(board, shape, x, y, rot);
 }
 
+// SpinType に対応するスコアを取得（内部の detector に委譲）
+float SpinEvaluator::getScore(SpinType type, bool isBTB) const {
+    return detector->getScore(type, isBTB);
+}
+
 float SpinEvaluator::evaluate(const BoardBits& board, const std::deque<PType>& next) {
     float score = 0.0f;
     

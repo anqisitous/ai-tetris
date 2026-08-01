@@ -190,6 +190,9 @@ public:
     
     // 具体的な配置のスピンタイプを取得
     SpinType getSpinType(const BoardBits& board, PType pieceType, int x, int y, int rot) const;
+
+    // SpinType に対応するスコアを取得（detector に委譲）
+    float getScore(SpinType type, bool isBTB) const;
 };
 
 // ---- Reachable Space Analysis ----

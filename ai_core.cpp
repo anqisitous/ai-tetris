@@ -124,53 +124,10 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         float score;
     };
     std::vector<ScoredCandidate> scored;
-    
-    // Check if we have I or T in hold
-    bool hasHoldI = (self.hold == PType::I);
-    bool hasHoldT = (self.hold == PType::T);
-    
-    // Create spin evaluator with BTB consideration
-    SpinEvaluator spinEvaluator(self.btb > 0);
-    
+
     for (auto& c : candidates) {
-        float score = 0.0f;
-        
-        // Danno inflitto
-        score += c.damage * 15.0f;
-        
-        // Qualità del terreno risultante
-        score += evaluateTerrainQuality(c.board);
-        score += evaluateDoubleDaggerReadiness(c.board);
-        
-        // Spin evaluation (T-Spin + Tetris)
-        SpinType spinType = spinEvaluator.getSpinType(self.board, self.curType, c.x, c.y, c.rot);
-        score += spinEvaluator.getScore(spinType, self.btb > 0);
-        
-        // Additional spin evaluation for the resulting board
-        score += spinEvaluator.evaluate(c.board, self.next) * 0.5f;
-        
-        // New hole evaluation with reachable space analysis
-        score += evaluateTerrainWithHoles(c.board, self.next, hasHoldI, hasHoldT);
-        
-        // Hole filling evaluation - can we fill holes with current/next/hold pieces?
-        score += evaluateHoleFilling(c.board, self.next, hasHoldI, hasHoldT, self.curType);
-        
-        // Horizontal parity check for perfect clear possibility
-        int hParity = calculateHorizontalParity(c.board);
-        if (hParity % 4 == 1 || hParity % 4 == 3) {
-            score -= EvalWeights::PARITY_PENALTY;
-        }
-        
-        // Bonus memoria pattern
-        Aspect newAspect = extractAspect(c.board, 0, self.combo, self.next);
-        PatternNeuron* match = state.patternMemory.findBestMatch(newAspect);
-        if (match && match->confidence > 2) {
-            score += match->confidence * 5.0f;
-        }
-        
-        // Penalità per hold (se non necessario)
-        if (c.usedHold) score -= 2.0f;
-        
+        float score = evaluateCandidate(state, c, self.board, self.curType,
+                                         self.next, self.hold, self.btb, self.combo);
         scored.push_back({c, score});
     }
     
@@ -196,6 +153,191 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
     
     // 8. Restituisci l'azione migliore
     return makeAction(scored[0].result, scored[0].result.usedHold);
+}
+
+// ---- Valutazione di un singolo piazzamento ----
+// decideAI と beamSearch の両方から使われる共通スコアリング関数。
+// beforeBoard/curType は配置前の状態（T-Spin判定に必要）、
+// next/hold/btb/combo はその時点でのプレイヤー状態を表す。
+float evaluateCandidate(AIState& state, const PlacementResult& c,
+                         const BoardBits& beforeBoard, PType curType,
+                         const std::deque<PType>& next,
+                         PType hold, int btb, int combo) {
+    float score = 0.0f;
+
+    // Check if we have I or T in hold
+    bool hasHoldI = (hold == PType::I);
+    bool hasHoldT = (hold == PType::T);
+
+    // Danno inflitto
+    score += c.damage * 15.0f;
+
+    // Qualità del terreno risultante
+    score += evaluateTerrainQuality(c.board);
+    score += evaluateDoubleDaggerReadiness(c.board);
+
+    // Spin evaluation (T-Spin + Tetris)
+    SpinEvaluator spinEvaluator(btb > 0);
+    SpinType spinType = spinEvaluator.getSpinType(beforeBoard, curType, c.x, c.y, c.rot);
+    score += spinEvaluator.getScore(spinType, btb > 0);
+
+    // Additional spin evaluation for the resulting board
+    score += spinEvaluator.evaluate(c.board, next) * 0.5f;
+
+    // New hole evaluation with reachable space analysis
+    score += evaluateTerrainWithHoles(c.board, next, hasHoldI, hasHoldT);
+
+    // Hole filling evaluation - can we fill holes with current/next/hold pieces?
+    score += evaluateHoleFilling(c.board, next, hasHoldI, hasHoldT, curType);
+
+    // Horizontal parity check for perfect clear possibility
+    int hParity = calculateHorizontalParity(c.board);
+    if (hParity % 4 == 1 || hParity % 4 == 3) {
+        score -= EvalWeights::PARITY_PENALTY;
+    }
+
+    // Bonus memoria pattern
+    Aspect newAspect = extractAspect(c.board, 0, combo, next);
+    PatternNeuron* match = state.patternMemory.findBestMatch(newAspect);
+    if (match && match->confidence > 2) {
+        score += match->confidence * 5.0f;
+    }
+
+    // Penalità per hold (se non necessario)
+    if (c.usedHold) score -= 2.0f;
+
+    return score;
+}
+
+// ---- Beam Search ----
+// 現在の盤面から searchDepth 手先まで探索し、各深さで上位 beamWidth 個の
+// ノードだけを残しながら進める。最終的に最もスコアの高いノードの
+// 「1手目の配置」を返す。
+//
+// 探索木のイメージ:
+//   depth 0: [curType を置く] -> beamWidth 個の子ノードに絞る
+//   depth 1: 各ノードの next[0] を置く -> 再び beamWidth 個に絞る
+//   ...
+//   depth N-1 まで繰り返し、最終スコアが最良のノードの firstMove を採用
+//
+// ノードごとに next キューを消費していくため、next が尽きたら
+// そのノードはそれ以上展開しない（既存のスコアで留まる）。
+BeamNode beamSearch(AIState& state, PlayerState& self,
+                     int beamWidth, int searchDepth) {
+    // ---- 深さ0: 現在のミノを置く ----
+    auto rootCandidates = EnumerateAllPlacements(
+        self.board, self.curType, self.canHold, self.hold, self.btb, self.combo);
+
+    std::vector<BeamNode> beam;
+    beam.reserve(rootCandidates.size());
+
+    for (auto& c : rootCandidates) {
+        float score = evaluateCandidate(state, c, self.board, self.curType,
+                                         self.next, self.hold, self.btb, self.combo);
+
+        BeamNode node;
+        node.board = c.board;
+        node.next = self.next;                 // 深さ1以降で先頭から消費する
+        node.hold = c.usedHold ? self.curType : self.hold;
+        node.canHold = true;                    // 1手ごとにホールドはリセットされる
+        node.btb = c.tSpin || c.linesCleared == 4 ? self.btb + 1
+                 : (c.linesCleared > 0 ? 0 : self.btb);
+        node.combo = c.linesCleared > 0 ? self.combo + 1 : 0;
+        node.score = score;
+        node.hasFirstMove = true;
+        node.firstX = c.x;
+        node.firstY = c.y;
+        node.firstRot = c.rot;
+        node.firstUsedHold = c.usedHold;
+        node.firstResult = c;
+
+        beam.push_back(std::move(node));
+    }
+
+    if (beam.empty()) {
+        return BeamNode{};  // 置ける場所がない（ゲームオーバー相当）
+    }
+
+    // 深さ0の時点でビーム幅に絞る
+    auto trimToBeamWidth = [&](std::vector<BeamNode>& nodes) {
+        if ((int)nodes.size() > beamWidth) {
+            std::partial_sort(nodes.begin(), nodes.begin() + beamWidth, nodes.end(),
+                               [](const BeamNode& a, const BeamNode& b) {
+                                   return a.score > b.score;
+                               });
+            nodes.resize(beamWidth);
+        } else {
+            std::sort(nodes.begin(), nodes.end(),
+                      [](const BeamNode& a, const BeamNode& b) {
+                          return a.score > b.score;
+                      });
+        }
+    };
+    trimToBeamWidth(beam);
+
+    // ---- 深さ1 以降: next キューを1つずつ消費しながら展開 ----
+    for (int depth = 1; depth < searchDepth; ++depth) {
+        std::vector<BeamNode> nextBeam;
+        nextBeam.reserve(beam.size() * 4);
+
+        for (auto& parent : beam) {
+            if (parent.next.empty()) {
+                // これ以上先読みできないノードはそのまま引き継ぐ
+                nextBeam.push_back(parent);
+                continue;
+            }
+
+            PType pieceType = parent.next.front();
+            std::deque<PType> remainingNext(parent.next.begin() + 1, parent.next.end());
+
+            auto candidates = EnumerateAllPlacements(
+                parent.board, pieceType, parent.canHold, parent.hold,
+                parent.btb, parent.combo);
+
+            if (candidates.empty()) {
+                // このノードはこれ以上展開できない（詰み）ので低評価のまま残す
+                nextBeam.push_back(parent);
+                continue;
+            }
+
+            for (auto& c : candidates) {
+                float addScore = evaluateCandidate(state, c, parent.board, pieceType,
+                                                    remainingNext, parent.hold,
+                                                    parent.btb, parent.combo);
+
+                BeamNode child = parent;  // firstMove などルート情報を引き継ぐ
+                child.board = c.board;
+                child.next = remainingNext;
+                child.hold = c.usedHold ? pieceType : parent.hold;
+                child.canHold = true;
+                child.btb = c.tSpin || c.linesCleared == 4 ? parent.btb + 1
+                          : (c.linesCleared > 0 ? 0 : parent.btb);
+                child.combo = c.linesCleared > 0 ? parent.combo + 1 : 0;
+                child.score = parent.score + addScore;  // 累積スコア
+
+                nextBeam.push_back(std::move(child));
+            }
+        }
+
+        if (nextBeam.empty()) break;  // 全ノードが展開不能なら打ち切り
+        trimToBeamWidth(nextBeam);
+        beam = std::move(nextBeam);
+    }
+
+    // ---- 最終的に最良のノードを返す ----
+    return *std::max_element(beam.begin(), beam.end(),
+                              [](const BeamNode& a, const BeamNode& b) {
+                                  return a.score < b.score;
+                              });
+}
+
+// ---- Beam Search の結果から AIAction を組み立てる ----
+AIAction makeActionFromBeam(const BeamNode& node) {
+    if (!node.hasFirstMove) {
+        // 置ける場所がなかった場合のフォールバック
+        return AIAction{3, 0, false, true, true, false};
+    }
+    return makeAction(node.firstResult, node.firstUsedHold);
 }
 
 // ---- Crea azione dal piazzamento ----
