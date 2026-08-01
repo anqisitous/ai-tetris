@@ -140,11 +140,11 @@ int calculateHorizontalParity(const BoardBits& board);
 // ---- Perfect Clear Theorem (パフェ定理) ----
 // 定理: JL+[SZ(90度)+T(90,270度)]=2n+横パリティ
 // Tは0度と180度を含まない (ピースの向きは90度と270度のみ)
-bool isPerfectClearTheoremSatisfied(int jl_count, int sz_90_count, int t_90_270_count, int horizontal_parity);
+bool isPerfectClearTheoremSatisfied(int jl_count, int sz_90_270_count, int t_90_270_count, int horizontal_parity);
 
 // Evaluate perfect clear possibility using the theorem
 float evaluatePerfectClearPossibility(const BoardBits& board, 
-                                       int jl_count, int sz_90_count, int t_90_270_count);
+                                       int jl_count, int sz_90_270_count, int t_90_270_count);
 
 // ---- Spin Detection Polymorphism (T-Spin + Tetris) ----
 // 回転後の状態を表す列挙型
