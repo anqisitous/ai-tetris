@@ -138,12 +138,12 @@ bool isCenterOpen(const BoardBits& board);
 int calculateHorizontalParity(const BoardBits& board);
 
 // ---- Perfect Clear Theorem (パフェ定理) ----
-// 定理: JL+[SZT横]+O=2n+1+横パリティ
-bool isPerfectClearTheoremSatisfied(int jl_count, int sz_count, int t_count, int o_count, int horizontal_parity);
+// 定理: JL+[SZT(90,270度)]=2n+横パリティ
+bool isPerfectClearTheoremSatisfied(int jl_count, int sz_count, int t_count, int horizontal_parity);
 
 // Evaluate perfect clear possibility using the theorem
 float evaluatePerfectClearPossibility(const BoardBits& board, 
-                                       int jl_count, int sz_count, int t_count, int o_count);
+                                       int jl_count, int sz_count, int t_count);
 
 // ---- Spin Detection Polymorphism (T-Spin + Tetris) ----
 // 回転後の状態を表す列挙型
