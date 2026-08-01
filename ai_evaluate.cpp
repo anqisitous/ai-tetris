@@ -180,9 +180,14 @@ float evaluateTerrainQuality(const BoardBits& board) {
     score += countTSDDoubleSetups(board) * 20.0f;
     
     // Horizontal parity penalty for perfect clear impossibility
+    // Perfect clear is impossible if the theorem is not satisfied
+    // We use a simplified check here based on horizontal parity
     int hParity = calculateHorizontalParity(board);
-    // If horizontal parity is 1 or 3, perfect clear is impossible
-    if (hParity % 4 == 1 || hParity % 4 == 3) {
+    // With new definition: horizontal_parity = number of columns with even count
+    // Perfect clear theorem: JL + [SZT横] + O = 2n + 1 + hParity
+    // For simplicity, we keep the parity-based penalty but note this should be
+    // replaced with a proper theorem check when piece counts are available
+    if (hParity % 2 == 1) {
         score -= 500.0f;  // Strong penalty for impossible perfect clear
     }
     
@@ -232,29 +237,28 @@ bool isCenterOpen(const BoardBits& board) {
 }
 
 // ---- Horizontal Parity (横パリティ) ----
-// 各列のブロック数が奇数か偶数かをカウント
-// 横パリティ = 奇数の列の数
+// 各列のブロック数が向数か偶数かをカイント
+// 横パリティ = 向数を10に含む列の数
 int calculateHorizontalParity(const BoardBits& board) {
-    int oddColumns = 0;
+    int evenColumns = 0;
     for (int c = 0; c < BOARD_W; ++c) {
         int count = 0;
         for (int r = 0; r < BOARD_H; ++r) {
             if (board[r] & (1 << c)) count++;
         }
-        if (count % 2 != 0) oddColumns++;
+        if (count % 2 == 0 && count > 0) evenColumns++;
     }
-    return oddColumns;
+    return evenColumns;
 }
 
 // ---- Perfect Clear Theorem (パフェ定理) ----
-// 定理: [JLTが0か180度の個数] = O個数 + [IZS*{±90度どちらか}の個数] + 2n + 現在の横パリティ
+// 定理: JL+[SZT横]+O=2n+1+横パリティ
 // This must hold modulo 2 for perfect clear to be possible
-bool isPerfectClearTheoremSatisfied(int jlt_0_180_count, int o_count, int izs_pm90_count, int horizontal_parity) {
-    // The theorem states: jlt_0_180 = o + izs_pm90 + 2n + hParity
-    // Modulo 2: jlt_0_180 % 2 == (o + izs_pm90 + hParity) % 2
-    // Since 2n % 2 = 0, we can ignore it
-    int leftSide = jlt_0_180_count % 2;
-    int rightSide = (o_count + izs_pm90_count + horizontal_parity) % 2;
+bool isPerfectClearTheoremSatisfied(int jl_count, int sz_count, int t_count, int o_count, int horizontal_parity) {
+    // The theorem states: JL + [SZT横] + O = 2n + 1 + hParity
+    // Modulo 2: (JL + SZ + T + O) % 2 == (1 + hParity) % 2
+    int leftSide = (jl_count + sz_count + t_count + o_count) % 2;
+    int rightSide = (1 + horizontal_parity) % 2;
     return leftSide == rightSide;
 }
 
@@ -262,10 +266,10 @@ bool isPerfectClearTheoremSatisfied(int jlt_0_180_count, int o_count, int izs_pm
 // Returns a score based on how close we are to satisfying the perfect clear theorem
 // Higher score means better chance for perfect clear
 float evaluatePerfectClearPossibility(const BoardBits& board, 
-                                       int jlt_0_180_count, int o_count, int izs_pm90_count) {
+                                       int jl_count, int sz_count, int t_count, int o_count) {
     int hParity = calculateHorizontalParity(board);
     
-    if (isPerfectClearTheoremSatisfied(jlt_0_180_count, o_count, izs_pm90_count, hParity)) {
+    if (isPerfectClearTheoremSatisfied(jl_count, sz_count, t_count, o_count, hParity)) {
         return 100.0f;  // Perfect clear is possible
     } else {
         return -100.0f;  // Perfect clear is impossible
@@ -840,7 +844,11 @@ float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& 
 
     // 横パリティの評価
     int hParity = calculateHorizontalParity(board);
-    if (hParity % 4 == 1 || hParity % 4 == 3) {
+    // With new definition: horizontal_parity = number of columns with even count
+    // Perfect clear theorem: JL + [SZT横] + O = 2n + 1 + hParity
+    // For simplicity, we keep the parity-based penalty but note this should be
+    // replaced with a proper theorem check when piece counts are available
+    if (hParity % 2 == 1) {
         score -= EvalWeights::PARITY_PENALTY;  // パフェ不可能
     }
 
