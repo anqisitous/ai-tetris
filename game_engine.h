@@ -13,7 +13,9 @@
 #include <unordered_map>
 
 // For testing without SDL
-#ifndef SDL_Color
+// SDL3実体は SDL3/SDL_pixels.h 内で SDL_pixels_h_ ガードの下に SDL_Color を定義する。
+// 単体テスト等でSDL3を読み込まない場合のみ、ここで代替定義する。
+#ifndef SDL_pixels_h_
 struct SDL_Color {
     uint8_t r, g, b, a;
 };

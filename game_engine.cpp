@@ -194,7 +194,7 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                 for (int dir : {1, 3}) {
                     int newRot = (cur.rot + dir) % 4;
                     const MinoShape& newShape = SHAPES[(int)ptype][newRot];
-                    const int8_t (*tests)[2] = (ptype == PType::I) ? KICK_I : KICK_OTHER;
+                    const int8_t (*tests)[5][2] = (ptype == PType::I) ? KICK_I : KICK_OTHER;
                     int tableIdx = -1;
                     if (ptype == PType::I) {
                         if (cur.rot == 0 && newRot == 1) tableIdx = 0;

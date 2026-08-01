@@ -140,7 +140,8 @@ int calculateHorizontalParity(const BoardBits& board);
 // ---- Perfect Clear Theorem (パフェ定理) ----
 // 定理: JL+[SZ(90度)+T(90,270度)]=2n+横パリティ
 // Tは0度と180度を含まない (ピースの向きは90度と270度のみ)
-bool isPerfectClearTheoremSatisfied(int jl_count, int sz_90_270_count, int t_90_270_count, int horizontal_parity);
+// jl_count: J/Lピースの個数、szt_90_270_count: SZピース(90度)とTピース(90/270度)の合計個数
+bool isPerfectClearTheoremSatisfied(int jl_count, int szt_90_270_count, int horizontal_parity);
 
 // Evaluate perfect clear possibility using the theorem
 float evaluatePerfectClearPossibility(const BoardBits& board, 

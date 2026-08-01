@@ -7,6 +7,7 @@
 #include "ai_core.h"
 #include <cstdio>
 #include <cmath>
+#include <random>
 
 // ---- SDL Globals ----
 SDL_Window* win = nullptr;
@@ -110,10 +111,14 @@ int main() {
     p1.init(123);
     p2.init(456);
     
+    // aiState/aiAct は P2 用。P1がAIVsAiモードに切り替わったときは p1AiState/p1Act を使う。
     AIState aiState;
+    AIState p1AiState;
     TemplateLibrary templateLib;
     aiState.templateLib = &templateLib;
     aiState.patternMemory = PatternMemory();
+    p1AiState.templateLib = &templateLib;
+    p1AiState.patternMemory = PatternMemory();
     
     double softDropSpeed = 0.03;
     double aiDasDelay = 0.10, aiArrDelay = 0.02, aiThinkInterval = 0.10;
@@ -122,7 +127,9 @@ int main() {
     Uint64 last = SDL_GetTicks();
     
     bool leftHeld = false, rightHeld = false;
-    AIAction aiAct;
+    AIAction aiAct;    // P2の行動
+    AIAction p1Act;    // P1がAI操作のときの行動
+    std::mt19937 garbageRng(2024);
     
     while (!quit) {
         Uint64 now = SDL_GetTicks();
@@ -136,7 +143,12 @@ int main() {
                 switch (e.key.key) {
                     case SDLK_T: aiVsAi = !aiVsAi; leftHeld = rightHeld = false; p1.softDrop = false; break;
                     case SDLK_P: paused = !paused; break;
-                    case SDLK_R: p1.init(123); p2.init(456); aiState = AIState(); aiState.templateLib = &templateLib; break;
+                    case SDLK_R:
+                        p1.init(123); p2.init(456);
+                        aiState = AIState(); aiState.templateLib = &templateLib;
+                        p1AiState = AIState(); p1AiState.templateLib = &templateLib;
+                        aiAct = AIAction{}; p1Act = AIAction{};
+                        break;
                     case SDLK_ESCAPE: quit = true; break;
                     case SDLK_LEFTBRACKET:
                         aiDasDelay = std::min(0.30, aiDasDelay + 0.01);
@@ -187,4 +199,70 @@ int main() {
                 else if (rightHeld && !leftHeld) dir = 1;
                 applyMoveRepeat(p1, dir, dt, 0.13, 0.02);
             }
-           
+
+            // score差分でロック時のダメージ発生を検知するため、ステップ前の値を控える
+            int p1ScoreBefore = p1.score;
+            int p2ScoreBefore = p2.score;
+
+            if (aiVsAi && !p1.gameOver) {
+                p1AiState.thinkTimer += dt;
+                if (!p1Act.ready && p1AiState.thinkTimer >= aiThinkInterval) {
+                    p1AiState.thinkTimer = 0;
+                    BeamNode node = beamSearch(p1AiState, p1, 20, 3);
+                    p1Act = makeActionFromBeam(node);
+                }
+                executeAI(p1, p1Act, dt, aiDasDelay, aiArrDelay);
+            }
+
+            if (!p2.gameOver) {
+                aiState.thinkTimer += dt;
+                if (!aiAct.ready && aiState.thinkTimer >= aiThinkInterval) {
+                    aiState.thinkTimer = 0;
+                    BeamNode node = beamSearch(aiState, p2, 20, 3);
+                    aiAct = makeActionFromBeam(node);
+                }
+                executeAI(p2, aiAct, dt, aiDasDelay, aiArrDelay);
+            }
+
+            // 重力落下（人間操作時のP1にも、AI操作中の両者にも共通して働く）
+            if (!p1.gameOver) stepPlayer(p1, dt, softDropSpeed);
+            if (!p2.gameOver) stepPlayer(p2, dt, softDropSpeed);
+
+            // スポーン位置での衝突をゲームオーバーとして扱う
+            // game_engine.cpp 側にこの判定が無いため、ここで補完する
+            auto checkSpawnCollision = [](PlayerState& ps) {
+                if (ps.gameOver) return;
+                const MinoShape& shape = SHAPES[(int)ps.curType][ps.curRot];
+                if (IsCollision(ps.board, shape, ps.curX, ps.curY)) ps.gameOver = true;
+            };
+            checkSpawnCollision(p1);
+            checkSpawnCollision(p2);
+
+            // ロックで発生したダメージは、送り主自身のoutgoingAttacksに積む
+            // （outgoingAttacks = そのプレイヤーが繰り出した攻撃、という向きで統一）
+            int p1Damage = p1.score - p1ScoreBefore;
+            int p2Damage = p2.score - p2ScoreBefore;
+            if (p1Damage > 0) p1.outgoingAttacks.push_back({0.0, p1Damage / 10});
+            if (p2Damage > 0) p2.outgoingAttacks.push_back({0.0, p2Damage / 10});
+
+            // 送り主側の保留分を取り出し、対戦相手の盤面へガベージとして反映する
+            auto dispatchAttacks = [&](PlayerState& sender, PlayerState& receiver) {
+                int totalLines = 0;
+                for (auto& atk : sender.outgoingAttacks) totalLines += atk.damage;
+                sender.outgoingAttacks.clear();
+                if (totalLines > 0 && !receiver.gameOver) AddGarbage(receiver.board, totalLines, garbageRng);
+            };
+            dispatchAttacks(p1, p2);
+            dispatchAttacks(p2, p1);
+        }
+
+        renderGame(p1, p2, softDropSpeed, aiDasDelay, aiArrDelay, aiThinkInterval, paused, aiVsAi);
+    }
+
+    if (font) TTF_CloseFont(font);
+    if (ren) SDL_DestroyRenderer(ren);
+    if (win) SDL_DestroyWindow(win);
+    TTF_Quit();
+    SDL_Quit();
+    return 0;
+}

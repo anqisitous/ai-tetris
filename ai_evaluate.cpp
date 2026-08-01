@@ -271,7 +271,8 @@ float evaluatePerfectClearPossibility(const BoardBits& board,
                                        int jl_count, int sz_90_count, int t_90_270_count) {
     int hParity = calculateHorizontalParity(board);
     
-    if (isPerfectClearTheoremSatisfied(jl_count, sz_90_count, t_90_270_count, hParity)) {
+    int szt_90_270_count = sz_90_count + t_90_270_count;
+    if (isPerfectClearTheoremSatisfied(jl_count, szt_90_270_count, hParity)) {
         return 100.0f;  // Perfect clear is possible
     } else {
         return -100.0f;  // Perfect clear is impossible

@@ -359,39 +359,58 @@ AIAction makeAction(const PlacementResult& best, bool usedHold) {
     return act;
 }
 
+// ---- 単純な非キック回転を1ステップ試みる ----
+// AI操作専用の簡易回転。SRSキックは使わず、その場での回転可否のみ判定する。
+// 塞がっている場合はfalseを返し、呼び出し側は横移動を先に進める。
+static bool tryRotateStep(PlayerState& ps, int dir) {
+    int newRot = (ps.curRot + dir + 4) % 4;
+    const MinoShape& shape = SHAPES[(int)ps.curType][newRot];
+    if (!IsCollision(ps.board, shape, ps.curX, ps.curY)) {
+        ps.curRot = newRot;
+        return true;
+    }
+    return false;
+}
+
 // ---- Esecuzione azione con DAS/ARR ----
+// AIActionが持つtargetX/targetRotに向けて、hold -> rotate -> move -> drop の
+// 順で毎フレーム少しずつ入力を進める。EnumerateAllPlacementsのBFSが返す
+// 座標は到達可能性を保証済みなので、この単純な逐次操作でも最終的に到達する。
 void executeAI(PlayerState& ps, AIAction& act, double dt, double das, double arr) {
     if (!act.ready) {
-        ps.moveRepeat = {};
+        ps.moveTimer = 0;
+        ps.moveDir = 0;
         return;
     }
-    
+
     // Hold
     if (act.shouldHold && !act.holdDone) {
         holdPiece(ps);
         act.holdDone = true;
         return;
     }
-    
-    // Rotazione
+
+    // Rotazione (回転優先だが詰まっていれば横移動へフォールバック)
     if (ps.curRot != act.targetRot) {
-        Piece test = {ps.curType, ps.curX, ps.curY, ps.curRot, false};
-        test.rotate(ps.board, 1);
-        ps.curX = test.x;
-        ps.curY = test.y;
-        ps.curRot = test.rot;
+        if (tryRotateStep(ps, 1)) return;
+        // 回転が阻害されている場合は横移動を先に進めて隙間を作る
+        if (ps.curX != act.targetX) {
+            int dir = (ps.curX < act.targetX) ? 1 : -1;
+            applyMoveRepeat(ps, dir, dt, das, arr);
+        }
         return;
     }
-    
+
     // Movimento laterale
     if (ps.curX != act.targetX) {
         int dir = (ps.curX < act.targetX) ? 1 : -1;
         applyMoveRepeat(ps, dir, dt, das, arr);
         return;
     }
-    
+
     // Hard drop
-    ps.moveRepeat = {};
+    ps.moveTimer = 0;
+    ps.moveDir = 0;
     if (act.shouldDrop) {
         hardDropPlayer(ps);
     }
