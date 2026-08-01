@@ -1,0 +1,95 @@
+name: AI Tetris Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential g++ pkg-config
+        # SDL3 might not be available in default repos, so we'll skip it for CI
+        # The unit tests don't require SDL
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Debug
+
+    - name: Build project
+      run: cmake --build build --config Debug
+
+    - name: Build tests
+      run: cmake --build build --target ai-tetris-tests
+
+    - name: Run tests
+      run: |
+        cd build
+        ctest --output-on-failure --verbose
+      working-directory: .
+
+    - name: Clean up
+      if: always()
+      run: rm -rf build
+
+  code-quality:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install clang-format
+      run: sudo apt-get install -y clang-format-14
+
+    - name: Check code formatting
+      run: |
+        # Find all C++ files and check formatting
+        find . -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | grep -v build | xargs clang-format-14 --dry-run --Werror
+
+    - name: Check for common issues
+      run: |
+        # Check for trailing whitespace
+        if grep -r "[[:space:]]*$" --include="*.cpp" --include="*.h" --include="*.hpp" .; then
+          echo "Found trailing whitespace"
+          exit 1
+        fi
+        
+        # Check for tabs (should use spaces)
+        if grep -r "\t" --include="*.cpp" --include="*.h" --include="*.hpp" .; then
+          echo "Found tabs in source files"
+          exit 1
+        fi
+
+  performance:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake build-essential g++
+
+    - name: Configure CMake
+      run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build performance test
+      run: cmake --build build --target ai-tetris-tests
+
+    - name: Run performance tests
+      run: |
+        cd build
+        ./bin/ai-tetris-tests
+      working-directory: .
+      env:
+        PERFORMANCE_TEST: "true"

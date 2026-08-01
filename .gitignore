@@ -1,0 +1,72 @@
+# ===================================================================
+# .gitignore for AI Tetris Project
+# ===================================================================
+
+# Build directories
+build/
+bin/
+
+# Object files and libraries
+*.o
+*.a
+*.so
+*.dll
+*.lib
+*.exe
+
+# Compiler output
+*.out
+*.class
+
+# IDE specific files
+.idea/
+.vs/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Editor specific files
+*.un~
+*.bak
+*.orig
+
+# Test coverage files
+coverage/
+*.gcno
+*.gcda
+*.lcov
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+
+# Log files
+*.log
+
+# Temporary files
+temp/
+tmp/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Package manager files
+package-lock.json
+node_modules/
+
+# SDL and other library files
+*.dylib
+*.framework
+
+# Visual Studio Code
+.vscode/
+
+# GitHub Actions artifacts
+.github/workflows/*
+!.github/workflows/test.yml

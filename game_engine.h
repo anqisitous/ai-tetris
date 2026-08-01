@@ -12,6 +12,13 @@
 #include <queue>
 #include <unordered_map>
 
+// For testing without SDL
+#ifndef SDL_Color
+struct SDL_Color {
+    uint8_t r, g, b, a;
+};
+#endif
+
 // ---- Costanti ----
 constexpr int BOARD_W = 10;
 constexpr int BOARD_H = 20;
