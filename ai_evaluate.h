@@ -47,6 +47,48 @@ namespace EvalWeights {
     constexpr float PERFECT_FILL_BONUS = 50.0f;
 }
 
+
+struct VariantSignature {
+    static constexpr int FEATURE_SIZE = 32;
+    std::array<float, FEATURE_SIZE> features{};
+    uint64_t hash = 0;
+    
+    VariantSignature() = default;
+    explicit VariantSignature(const std::array<float, FEATURE_SIZE>& f, uint64_t h = 0)
+        : features(f), hash(h) {}
+    
+    bool operator==(const VariantSignature& other) const {
+        return hash == other.hash;
+    }
+    
+    bool operator!=(const VariantSignature& other) const {
+        return !(*this == other);
+    }
+    
+    float similarity(const VariantSignature& other) const {
+        float dot = 0.0f, normA = 0.0f, normB = 0.0f;
+        for (int i = 0; i < FEATURE_SIZE; ++i) {
+            dot += features[i] * other.features[i];
+            normA += features[i] * features[i];
+            normB += other.features[i] * other.features[i];
+        }
+        if (normA < 1e-6f || normB < 1e-6f) return 0.0f;
+        return dot / (std::sqrt(normA) * std::sqrt(normB));
+    }
+};
+
+namespace std {
+    template<>
+    struct hash<VariantSignature> {
+        size_t operator()(const VariantSignature& sig) const {
+            return static_cast<size_t>(sig.hash);
+        }
+    };
+}
+
+// ---- VariantSignature 生成関数 ----
+VariantSignature recognizeVariant(const BoardBits& board, const std::deque<PType>& next = {});
+
 // ============================================================
 // 到達可能空間の連結成分
 // ============================================================
@@ -251,3 +293,5 @@ uint64_t lshHash(const std::vector<float>& vec, int bits = 20);
 
 // ---- Danno e attacco ----
 int calculateDamage(int linesCleared, bool tSpin, bool btb, int combo, bool perfectClear);
+
+
