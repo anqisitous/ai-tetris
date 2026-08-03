@@ -72,18 +72,22 @@ void testCollisionDetection_EmptyBoard() {
     bool collision = IsCollision(board, SHAPES[(int)PType::I][0], 3, 0);
     if (collision) throw std::runtime_error("I piece should not collide at (3,0) on empty board");
     
-    // Test with I piece at invalid position (below board)
+    // row < 0 はバッファ領域（画面上部の見えない部分）として扱われ、
+    // IsCollision内では意図的に衝突なしとされる(game_engine.cpp: ShiftRowMask/IsCollision参照)。
+    // スポーン位置での画面外はみ出しは、main_sdl3.cppのcheckSpawnCollisionが別途補完する設計であり、
+    // IsCollision単体がy<0で衝突を返さないのは仕様通りの挙動。
     collision = IsCollision(board, SHAPES[(int)PType::I][0], 3, -1);
-    if (!collision) throw std::runtime_error("I piece should collide below board");
+    if (collision) throw std::runtime_error("IsCollision should not flag y<0 (buffer zone) as collision by design");
 }
 
 void testHardDropY_EmptyBoard() {
     BoardBits board = TestFixtures::createEmptyBoard();
     
-    // I piece should drop to bottom
+    // I piece (spawn rotation, height=1) は空盤面ではBOARD_H-1まで落下する
+    // (heightが1マス分のみのため、底はBOARD_H-1)
     int dropY = HardDropY(board, SHAPES[(int)PType::I][0], 3);
-    if (dropY != BOARD_H - 4) {
-        throw std::runtime_error("I piece should drop to y=16 (bottom - height)");
+    if (dropY != BOARD_H - 1) {
+        throw std::runtime_error("I piece (height=1) should drop to y=BOARD_H-1 on empty board");
     }
 }
 
@@ -96,9 +100,21 @@ void testClearLines_SingleLine() {
 }
 
 void testCalculateDamage_Basic() {
+    // Tetris Guideline準拠のダメージテーブル: シングル消去(1ライン)は攻撃力0。
+    // ダブル=1, トリプル=2, テトリス=4 (game_engine.cpp: CalculateDamage参照)。
     int damage = CalculateDamage(1, false, false, 0, false);
-    if (damage != 1) {
-        throw std::runtime_error("Single line should deal 1 damage");
+    if (damage != 0) {
+        throw std::runtime_error("Single line clear should deal 0 damage (Tetris Guideline)");
+    }
+
+    int doubleDamage = CalculateDamage(2, false, false, 0, false);
+    if (doubleDamage != 1) {
+        throw std::runtime_error("Double line clear should deal 1 damage");
+    }
+
+    int tetrisDamage = CalculateDamage(4, false, false, 0, false);
+    if (tetrisDamage != 4) {
+        throw std::runtime_error("Tetris (4 lines) should deal 4 damage");
     }
 }
 
