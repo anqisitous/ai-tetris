@@ -71,7 +71,7 @@ AIAction makeAction(const PlacementResult& best, bool usedHold);
 // curType: 配置するミノの種類（T-Spin判定に必要）
 float evaluateCandidate(AIState& state, const PlacementResult& c,
                          const BoardBits& beforeBoard, PType curType,
-                         const std::deque<PType>& next,
+                         const std::vector<PType>& next,
                          PType hold, int btb, int combo);
 
 // ---- Perfect Clear ----
@@ -83,7 +83,7 @@ AIAction tryPerfectClearAction(AIState& state, const PlayerState& self);
 // 現在の盤面から複数手先まで探索し、最初の一手を決定する。
 struct BeamNode {
     BoardBits board;              // この時点の盤面
-    std::deque<PType> next;       // 残りネクストキュー（先頭から消費）
+    std::vector<PType> next;       // 残りネクストキュー（先頭から消費）
     PType hold;                   // 保持中のミノ
     bool canHold;                 // ホールド使用可能か
     int btb;                      // Back-to-Back カウント
