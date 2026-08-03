@@ -108,6 +108,8 @@ struct PlayerState {
 };
 
 // ---- Funzioni di base ----
+// ミノ1段分の列マスクを x だけ横に動かす。盤外にはみ出す場合は false。
+bool ShiftRowMask(uint16_t rowMask, int x, uint16_t& out);
 bool IsCollision(const BoardBits& board, const MinoShape& shape, int x, int y);
 int HardDropY(const BoardBits& board, const MinoShape& shape, int x);
 int ClearLines(BoardBits& board);

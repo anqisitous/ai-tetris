@@ -13,14 +13,23 @@ const SDL_Color COLORS[7] = {
 };
 
 // ---- Forme ----
+// rows[r] は上から r 番目の段の列マスク (bit0 = ミノの左端の列)。
+// height はそのミノが占める段数。空の段は含めない。
 const MinoShape SHAPES[7][4] = {
-    { {{0x0F00,0,0,0},1}, {{0x2222,0,0,0},4}, {{0x0F00,0,0,0},1}, {{0x2222,0,0,0},4} },
-    { {{0x6600,0,0,0},2}, {{0x6600,0,0,0},2}, {{0x6600,0,0,0},2}, {{0x6600,0,0,0},2} },
-    { {{0x2700,0,0,0},2}, {{0x2320,0,0,0},3}, {{0x0E40,0,0,0},2}, {{0x2620,0,0,0},3} },
-    { {{0x3600,0,0,0},2}, {{0x2310,0,0,0},3}, {{0x3600,0,0,0},2}, {{0x2310,0,0,0},3} },
-    { {{0x6300,0,0,0},2}, {{0x1320,0,0,0},3}, {{0x6300,0,0,0},2}, {{0x1320,0,0,0},3} },
-    { {{0x4700,0,0,0},2}, {{0x3220,0,0,0},3}, {{0x0E20,0,0,0},2}, {{0x2260,0,0,0},3} },
-    { {{0x1700,0,0,0},2}, {{0x2230,0,0,0},3}, {{0x0E80,0,0,0},2}, {{0x6220,0,0,0},3} }
+    // I
+    { {{0xF,0,0,0},1}, {{0x4,0x4,0x4,0x4},4}, {{0xF,0,0,0},1}, {{0x2,0x2,0x2,0x2},4} },
+    // O
+    { {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2} },
+    // T
+    { {{0x2,0x7,0,0},2}, {{0x2,0x6,0x2,0},3}, {{0x7,0x2,0,0},2}, {{0x2,0x3,0x2,0},3} },
+    // S
+    { {{0x6,0x3,0,0},2}, {{0x2,0x6,0x4,0},3}, {{0x6,0x3,0,0},2}, {{0x1,0x3,0x2,0},3} },
+    // Z
+    { {{0x3,0x6,0,0},2}, {{0x4,0x6,0x2,0},3}, {{0x3,0x6,0,0},2}, {{0x2,0x3,0x1,0},3} },
+    // J
+    { {{0x1,0x7,0,0},2}, {{0x6,0x2,0x2,0},3}, {{0x7,0x4,0,0},2}, {{0x2,0x2,0x3,0},3} },
+    // L
+    { {{0x4,0x7,0,0},2}, {{0x2,0x2,0x6,0},3}, {{0x7,0x1,0,0},2}, {{0x3,0x2,0x2,0},3} }
 };
 
 // ---- Kick tables (semplificate) ----
@@ -46,16 +55,32 @@ const int8_t KICK_OTHER[8][5][2] = {
     {{0,0},{1,0},{1,1},{0,-2},{1,-2}}
 };
 
+// ---- Maschera di una riga della mino traslata di x ----
+// 盤外にはみ出す場合は false を返す (占有マスが盤面から消えないようにする)
+bool ShiftRowMask(uint16_t rowMask, int x, uint16_t& out) {
+    if (rowMask == 0) { out = 0; return true; }
+    if (x >= BOARD_W || x <= -4) return false;
+    if (x >= 0) {
+        uint32_t shifted = static_cast<uint32_t>(rowMask) << x;
+        if (shifted & ~static_cast<uint32_t>(0x3FF)) return false;
+        out = static_cast<uint16_t>(shifted);
+    } else {
+        int shift = -x;
+        if (rowMask & ((1u << shift) - 1)) return false;  // 左にはみ出す
+        out = static_cast<uint16_t>(rowMask >> shift);
+    }
+    return true;
+}
+
 // ---- Collisione ----
 bool IsCollision(const BoardBits& board, const MinoShape& shape, int x, int y) {
     for (int r = 0; r < shape.height; ++r) {
+        uint16_t mask = 0;
+        if (!ShiftRowMask(shape.rows[r], x, mask)) return true;
+        if (mask == 0) continue;
         int row = y + r;
         if (row < 0) continue;
-        if (row >= BOARD_BUFFER) return true;
-        uint16_t mask = shape.rows[r];
-        if (x >= 0) mask <<= x;
-        else mask >>= (-x);
-        if (mask & 0xFC00) return true;
+        if (row >= BOARD_H) return true;
         if (board[row] & mask) return true;
     }
     return false;
@@ -63,10 +88,11 @@ bool IsCollision(const BoardBits& board, const MinoShape& shape, int x, int y) {
 
 // ---- Hard Drop Y ----
 int HardDropY(const BoardBits& board, const MinoShape& shape, int x) {
+    if (IsCollision(board, shape, x, 0)) return -1;
     int y = 0;
     while (!IsCollision(board, shape, x, y + 1)) {
         ++y;
-        if (y >= BOARD_BUFFER) return -1;
+        if (y >= BOARD_H) return -1;
     }
     return y;
 }

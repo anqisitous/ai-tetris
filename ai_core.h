@@ -5,6 +5,7 @@
 #include "game_engine.h"
 #include "ai_evaluate.h"
 #include "ai_templates.h"
+#include "pc_search.h"
 #include <vector>
 #include <deque>
 #include <memory>
@@ -54,6 +55,10 @@ struct AIState {
     double arrDelay = 0.02;
     double thinkInterval = 0.10;
     double thinkTimer = 0.0;
+
+    // パフェ探索
+    bool enablePerfectClear = true;
+    PCSearchOptions pcOptions;
 };
 
 // ---- Funzioni AI ----
@@ -68,6 +73,11 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
                          const BoardBits& beforeBoard, PType curType,
                          const std::deque<PType>& next,
                          PType hold, int btb, int combo);
+
+// ---- Perfect Clear ----
+// 盤面が低いときにパフェ手順を探し、見つかれば最初の一手を返す。
+// 見つからなければ ready = false の AIAction を返す。
+AIAction tryPerfectClearAction(AIState& state, const PlayerState& self);
 
 // ---- Beam Search ----
 // 現在の盤面から複数手先まで探索し、最初の一手を決定する。

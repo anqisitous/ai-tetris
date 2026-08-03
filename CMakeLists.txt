@@ -20,6 +20,8 @@ add_executable(ai-tetris
     ai_core.cpp
     ai_evaluate.cpp
     ai_templates.cpp
+    pc_parity.cpp
+    pc_search.cpp
 )
 
 if(SDL3_FOUND AND SDL3_ttf_FOUND)
@@ -42,6 +44,8 @@ add_executable(ai-tetris-tests
     ai_evaluate.cpp
     ai_core.cpp
     ai_templates.cpp
+    pc_parity.cpp
+    pc_search.cpp
 )
 
 # Link test executable with main code (excluding SDL for unit tests)
