@@ -11,7 +11,608 @@
 // ============================================================
 // 1. 20段階観測の生成
 // ============================================================
+// ===================================================================
+// ai_core.cpp - 状況依存バリアント・チェーンAI 実装
+// ===================================================================
+#include "ai_core.h"
+#include "ai_evaluate.h"
+#include "pc_parity.h"
+#include <algorithm>
+#include <cmath>
+#include <random>
+#include <unordered_set>
 
+// ============================================================
+// VariantSignature 実装
+// ============================================================
+
+float VariantSignature::similarity(const VariantSignature& other) const {
+    // 1. 地形パターン（重み: 0.5）
+    int topRowDiff = (topRows ^ other.topRows).count();
+    float topSimilarity = 1.0f - (static_cast<float>(topRowDiff) / 30.0f);
+    
+    // 2. 特徴ベクトル（重み: 0.3）
+    float vecSimilarity = 0.0f;
+    if (!featureVector.empty() && !other.featureVector.empty()) {
+        float dot = 0.0f, normA = 0.0f, normB = 0.0f;
+        size_t n = std::min(featureVector.size(), other.featureVector.size());
+        for (size_t i = 0; i < n; ++i) {
+            dot += featureVector[i] * other.featureVector[i];
+            normA += featureVector[i] * featureVector[i];
+            normB += other.featureVector[i] * other.featureVector[i];
+        }
+        if (normA > 0 && normB > 0) {
+            vecSimilarity = dot / (std::sqrt(normA) * std::sqrt(normB));
+        }
+    }
+    
+    // 3. コンテキスト（重み: 0.2）
+    float contextSimilarity = 0.0f;
+    float heightDiff = std::abs(stackHeight - other.stackHeight) / 20.0f;
+    float holeDiff = std::abs(holes - other.holes) / 20.0f;
+    float parityMatch = (oddParityRows == other.oddParityRows) ? 1.0f : 0.0f;
+    float wellMatch = (hasWell == other.hasWell) ? 1.0f : 0.0f;
+    contextSimilarity = (1.0f - heightDiff) * 0.3f + 
+                        (1.0f - holeDiff) * 0.3f +
+                        parityMatch * 0.2f +
+                        wellMatch * 0.2f;
+    
+    return topSimilarity * 0.5f + vecSimilarity * 0.3f + contextSimilarity * 0.2f;
+}
+
+// ============================================================
+// 状況認識
+// ============================================================
+
+VariantSignature recognizeVariant(const BoardBits& board, const std::deque<PType>& next) {
+    VariantSignature sig;
+    
+    // 地形パターン（上3行）
+    sig.topRows = GetTop3Rows(board);
+    
+    // 特徴ベクトル抽出
+    Aspect aspect = extractAspect(board);
+    sig.featureVector = aspect.values;
+    if (sig.featureVector.size() > 20) {
+        sig.featureVector.resize(20);
+    }
+    
+    // LSHハッシュ
+    sig.lshHash = lshHash(sig.featureVector);
+    
+    // コンテキスト情報
+    sig.stackHeight = 0;
+    for (int r = 0; r < BOARD_H; ++r) {
+        if (board[r] != 0) { sig.stackHeight = BOARD_H - r; break; }
+    }
+    
+    sig.holes = countHoles(board);
+    sig.oddParityRows = calculateHorizontalParity(board);
+    
+    // Well（縦穴）の有無
+    sig.hasWell = false;
+    for (int c = 0; c < BOARD_W; ++c) {
+        int wellDepth = 0;
+        int h = getColumnHeight(board, c);
+        for (int r = h; r < BOARD_H; ++r) {
+            if (!(board[r] & (1 << c))) {
+                wellDepth++;
+            } else {
+                break;
+            }
+        }
+        if (wellDepth >= 4) {
+            sig.hasWell = true;
+            break;
+        }
+    }
+    
+    // コンボ可能性（簡易）
+    sig.comboPotential = 0;
+    for (int r = 0; r < BOARD_H; ++r) {
+        if (board[r] == 0x3FF) sig.comboPotential++;
+    }
+    
+    return sig;
+}
+
+// ============================================================
+// チェーン検索
+// ============================================================
+
+int findMatchingChain(const AIState& state, const VariantSignature& current) {
+    int bestIdx = -1;
+    float bestScore = state.similarityThreshold;
+    
+    for (size_t i = 0; i < state.chains.size(); ++i) {
+        const auto& chain = state.chains[i];
+        if (chain.transitions.empty()) continue;
+        
+        // チェーンの最初の遷移と比較
+        const auto& first = chain.transitions[0];
+        float sim = current.similarity(first.from);
+        
+        // コンテキスト条件チェック
+        bool heightOk = current.stackHeight >= chain.minStackHeight &&
+                       current.stackHeight <= chain.maxStackHeight;
+        
+        if (sim > bestScore && heightOk) {
+            bestScore = sim;
+            bestIdx = i;
+        }
+    }
+    
+    return bestIdx;
+}
+
+// ============================================================
+// 遷移選択
+// ============================================================
+
+VariantTransition selectTransition(const VariantChain& chain, const std::vector<PType>& hand) {
+    // 現在のインデックスが範囲外なら最初に戻る
+    int idx = chain.currentIndex;
+    if (idx < 0 || idx >= static_cast<int>(chain.transitions.size())) {
+        idx = 0;
+    }
+    
+    const auto& transition = chain.transitions[idx];
+    
+    // 必要なミノが手札にあるかチェック
+    if (transition.requiredPiece != PType::I) { // Iはデフォルト（指定なし）
+        bool hasRequired = false;
+        for (PType p : hand) {
+            if (p == transition.requiredPiece) {
+                hasRequired = true;
+                break;
+            }
+        }
+        if (!hasRequired) {
+            // 類似遷移を探す（代替案）
+            for (const auto& alt : chain.transitions) {
+                if (alt != transition && alt.confidence > 0.5f) {
+                    // 次の遷移を試す
+                    return alt;
+                }
+            }
+        }
+    }
+    
+    return transition;
+}
+
+// ============================================================
+// 遷移実行
+// ============================================================
+
+AIAction executeTransition(const VariantTransition& transition) {
+    AIAction act;
+    act.targetX = transition.targetX;
+    act.targetRot = transition.targetRot;
+    act.shouldHold = transition.useHold;
+    act.shouldDrop = true;
+    act.ready = true;
+    act.holdDone = false;
+    return act;
+}
+
+// ============================================================
+// 予測評価
+// ============================================================
+
+float evaluatePrediction(const VariantSignature& predicted, const VariantSignature& actual) {
+    float sim = predicted.similarity(actual);
+    // 地形パターンが一致しているか（より厳格）
+    int diff = (predicted.topRows ^ actual.topRows).count();
+    float topMatch = 1.0f - (static_cast<float>(diff) / 30.0f);
+    
+    // 総合スコア（予測と実際の一致度）
+    return sim * 0.6f + topMatch * 0.4f;
+}
+
+// ============================================================
+// 見誤り分析
+// ============================================================
+
+Misperception analyzeMisperception(
+    const VariantSignature& perceived,
+    const VariantTransition& predicted,
+    const VariantSignature& actual,
+    const std::vector<PType>& hand,
+    float timing
+) {
+    Misperception mis;
+    mis.perceived = perceived;
+    mis.predicted = predicted;
+    mis.actual = actual;
+    mis.hand = hand;
+    mis.timing = timing;
+    mis.learned = false;
+    
+    // 誤差計算
+    mis.predictionError = 1.0f - evaluatePrediction(predicted.to, actual);
+    
+    // 誤差タイプを分析
+    int topDiff = (predicted.to.topRows ^ actual.topRows).count();
+    int handDiff = 0;
+    for (size_t i = 0; i < std::min(hand.size(), size_t(3)); ++i) {
+        // 手札の違いを分析
+    }
+    
+    if (topDiff > 5) {
+        mis.errorType = "地形誤認";
+    } else if (handDiff > 0) {
+        mis.errorType = "手札誤認";
+    } else {
+        mis.errorType = "タイミング誤認";
+    }
+    
+    // 重要度（誤差が大きいほど重要）
+    mis.weight = mis.predictionError * 2.0f;
+    
+    return mis;
+}
+
+// ============================================================
+// 見誤りからの学習（新しいバリアント生成）
+// ============================================================
+
+void learnFromMisperception(AIState& state, const Misperception& mis) {
+    // 1. 記憶に追加
+    state.memory.addMisperception(mis);
+    state.recentMisperceptions.push_back(mis);
+    
+    // 2. 見誤りが一定数蓄積したら新しいチェーン生成
+    if (state.recentMisperceptions.size() >= 3) {
+        // 類似する見誤りをグループ化
+        std::vector<Misperception> similar;
+        for (const auto& recent : state.recentMisperceptions) {
+            if (recent.perceived.similarity(mis.perceived) > 0.6f) {
+                similar.push_back(recent);
+            }
+        }
+        
+        if (similar.size() >= 2) {
+            // 新しいバリアントチェーンを生成
+            createNewVariantChain(state, mis);
+            state.recentMisperceptions.clear();
+        }
+    }
+    
+    // 3. 類似チェーンの合成
+    if (state.chains.size() > state.maxChains * 0.8f) {
+        mergeSimilarChains(state);
+    }
+}
+
+// ============================================================
+// 新しいバリアントチェーン生成（核心！）
+// ============================================================
+
+void createNewVariantChain(AIState& state, const Misperception& mis) {
+    VariantChain newChain;
+    
+    // ユニークID生成
+    static int chainId = 0;
+    newChain.id = "chain_" + std::to_string(chainId++);
+    newChain.name = "Variant from misperception";
+    
+    // 遷移を構築
+    VariantTransition t1, t2;
+    
+    // t1: 認識した盤面 → 予測した行動
+    t1.from = mis.perceived;
+    t1.targetX = mis.predicted.targetX;
+    t1.targetRot = mis.predicted.targetRot;
+    t1.useHold = mis.predicted.useHold;
+    t1.requiredPiece = mis.predicted.requiredPiece;
+    t1.to = mis.predicted.to;
+    t1.confidence = 1.0f - mis.predictionError;
+    t1.successCount = 0;
+    t1.failCount = 1;
+    
+    // t2: 予測した盤面 → 実際の結果（修正版）
+    t2.from = mis.predicted.to;
+    t2.targetX = mis.actualX;
+    t2.targetRot = mis.actualRot;
+    t2.useHold = false;
+    t2.requiredPiece = mis.actualPiece;
+    t2.to = mis.actual;
+    t2.confidence = 1.0f - mis.predictionError * 0.5f;
+    t2.successCount = 1;
+    t2.failCount = 0;
+    
+    newChain.transitions = {t1, t2};
+    newChain.currentIndex = 0;
+    
+    // 発動条件
+    newChain.minStackHeight = mis.perceived.stackHeight - 2;
+    newChain.maxStackHeight = mis.perceived.stackHeight + 2;
+    
+    // 必要なミノ
+    newChain.requiredPieces = mis.hand;
+    
+    // 統計
+    newChain.activationCount = 1;
+    newChain.completionCount = 0;
+    newChain.isActive = false;
+    newChain.progress = 0.0f;
+    
+    // チェーンを追加
+    state.chains.push_back(newChain);
+    state.misperceptionCount++;
+}
+
+// ============================================================
+// 類似チェーン合成
+// ============================================================
+
+void mergeSimilarChains(AIState& state) {
+    std::vector<int> toMerge;
+    std::unordered_set<int> merged;
+    
+    for (size_t i = 0; i < state.chains.size(); ++i) {
+        if (merged.count(i)) continue;
+        
+        for (size_t j = i + 1; j < state.chains.size(); ++j) {
+            if (merged.count(j)) continue;
+            
+            const auto& a = state.chains[i];
+            const auto& b = state.chains[j];
+            
+            if (a.transitions.empty() || b.transitions.empty()) continue;
+            
+            // 最初の遷移の類似度をチェック
+            float sim = a.transitions[0].from.similarity(b.transitions[0].from);
+            if (sim > 0.8f) {
+                // 合成候補
+                toMerge.push_back(i);
+                toMerge.push_back(j);
+                merged.insert(i);
+                merged.insert(j);
+                break;
+            }
+        }
+    }
+    
+    // 合成実行（実際のマージ処理）
+    for (int idx : toMerge) {
+        // 信頼度の高い方にマージ
+        // （簡易実装：後ろのチェーンを削除）
+        if (idx < static_cast<int>(state.chains.size())) {
+            state.chains.erase(state.chains.begin() + idx);
+        }
+    }
+}
+
+// ============================================================
+// メインAI決定
+// ============================================================
+
+AIAction decideVariantAI(AIState& state, PlayerState& self, PlayerState& opp, float gameTime) {
+    state.totalDecisions++;
+    
+    // 1. 現在の状況を認識
+    VariantSignature current = recognizeVariant(self.board, self.next);
+    
+    // 2. アクティブチェーンの継続
+    if (state.activeChainIndex >= 0 && state.activeChainIndex < static_cast<int>(state.chains.size())) {
+        auto& chain = state.chains[state.activeChainIndex];
+        
+        if (chain.currentIndex < static_cast<int>(chain.transitions.size())) {
+            // 手札を準備
+            std::vector<PType> hand;
+            for (PType p : self.next) hand.push_back(p);
+            if (self.canHold) hand.push_back(self.hold);
+            
+            // 次の遷移を選択
+            VariantTransition nextTrans = selectTransition(chain, hand);
+            
+            // 遷移が有効かチェック
+            if (current.similarity(nextTrans.from) > 0.5f) {
+                // 実行
+                auto act = executeTransition(nextTrans);
+                chain.currentIndex++;
+                chain.progress = static_cast<float>(chain.currentIndex) / chain.transitions.size();
+                
+                if (chain.currentIndex >= static_cast<int>(chain.transitions.size())) {
+                    chain.isActive = false;
+                    chain.completionCount++;
+                    state.activeChainIndex = -1;
+                }
+                
+                return act;
+            } else {
+                // 遷移が無効になった
+                chain.isActive = false;
+                state.activeChainIndex = -1;
+            }
+        }
+    }
+    
+    // 3. 新しいチェーンを検索
+    int matchIdx = findMatchingChain(state, current);
+    if (matchIdx >= 0) {
+        state.activeChainIndex = matchIdx;
+        auto& chain = state.chains[matchIdx];
+        chain.isActive = true;
+        chain.currentIndex = 0;
+        chain.activationCount++;
+        
+        // 再帰的に実行（最初の遷移）
+        return decideVariantAI(state, self, opp, gameTime);
+    }
+    
+    // 4. 類似経験をメモリから検索
+    auto similarExps = state.memory.findSimilar(current, 5);
+    if (!similarExps.empty()) {
+        // 最も近い経験の行動を再利用
+        const auto& best = similarExps[0];
+        auto act = executeTransition(best.action);
+        
+        // ただし、今回は見誤りとしてマーク（後で学習用）
+        // 実際の結果は後で評価される
+        return act;
+    }
+    
+    // 5. フォールバック：従来の評価関数を使用
+    // （ここでは簡易的にテンプレートマッチング）
+    auto candidates = EnumerateAllPlacements(self.board, self.curType,
+                                              self.canHold, self.hold,
+                                              self.btb, self.combo);
+    
+    if (candidates.empty()) {
+        return AIAction{3, 0, false, true, true, false};
+    }
+    
+    // 最も高い評価のものを選択
+    float bestScore = -1e9;
+    PlacementResult* best = nullptr;
+    for (auto& c : candidates) {
+        float score = evaluateTerrainQuality(c.board) +
+                      c.damage * 10.0f;
+        if (score > bestScore) {
+            bestScore = score;
+            best = &c;
+        }
+    }
+    
+    if (best) {
+        AIAction act;
+        act.targetX = best->x;
+        act.targetRot = best->rot;
+        act.shouldHold = best->usedHold;
+        act.shouldDrop = true;
+        act.ready = true;
+        return act;
+    }
+    
+    return AIAction{3, 0, false, true, true, false};
+}
+
+// ============================================================
+// NeuralMemory 実装
+// ============================================================
+
+void NeuralMemory::addExperience(const Experience& exp) {
+    experiences.push_back(exp);
+    
+    // LSHインデックス更新
+    uint64_t hash = lshHash(exp.state.featureVector);
+    lshIndex[hash].push_back(experiences.size() - 1);
+    
+    if (experiences.size() > MAX_EXPERIENCES) {
+        pruneOldest();
+    }
+}
+
+void NeuralMemory::addMisperception(const Misperception& mis) {
+    misperceptions.push_back(mis);
+    if (misperceptions.size() > MAX_MISPERCEPTIONS) {
+        // 最も古いものを削除（重みが低いものから）
+        std::sort(misperceptions.begin(), misperceptions.end(),
+                  [](const Misperception& a, const Misperception& b) {
+                      return a.weight < b.weight;
+                  });
+        misperceptions.erase(misperceptions.begin());
+    }
+}
+
+std::vector<NeuralMemory::Experience> NeuralMemory::findSimilar(
+    const VariantSignature& query, int topK) {
+    
+    std::vector<Experience> results;
+    
+    // LSHで候補を絞る
+    uint64_t queryHash = lshHash(query.featureVector);
+    std::unordered_set<size_t> candidates;
+    
+    for (const auto& [hash, indices] : lshIndex) {
+        if ((hash ^ queryHash) < (1ULL << 10)) {
+            for (size_t idx : indices) {
+                candidates.insert(idx);
+            }
+        }
+    }
+    
+    // 各候補の類似度を計算
+    std::vector<std::pair<float, size_t>> scored;
+    for (size_t idx : candidates) {
+        if (idx < experiences.size()) {
+            float sim = experiences[idx].state.similarity(query);
+            if (sim > 0.5f) {
+                scored.push_back({sim, idx});
+            }
+        }
+    }
+    
+    // スコア順にソート
+    std::sort(scored.begin(), scored.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // トップKを取得
+    int count = 0;
+    for (const auto& [score, idx] : scored) {
+        if (count >= topK) break;
+        results.push_back(experiences[idx]);
+        count++;
+    }
+    
+    return results;
+}
+
+std::vector<Misperception> NeuralMemory::findRecentMisperceptions(int count) {
+    std::vector<Misperception> recent;
+    int start = std::max(0, static_cast<int>(misperceptions.size()) - count);
+    for (int i = start; i < static_cast<int>(misperceptions.size()); ++i) {
+        recent.push_back(misperceptions[i]);
+    }
+    return recent;
+}
+
+void NeuralMemory::pruneOldest() {
+    if (experiences.size() <= MAX_EXPERIENCES) return;
+    
+    // 最も古い経験を削除
+    experiences.erase(experiences.begin());
+    
+    // インデックス再構築（簡易）
+    lshIndex.clear();
+    for (size_t i = 0; i < experiences.size(); ++i) {
+        uint64_t hash = lshHash(experiences[i].state.featureVector);
+        lshIndex[hash].push_back(i);
+    }
+}
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+
+float variantDistance(const VariantSignature& a, const VariantSignature& b) {
+    return 1.0f - a.similarity(b);
+}
+
+uint64_t computeVariantLSH(const VariantSignature& sig) {
+    return lshHash(sig.featureVector);
+}
+
+std::string chainToString(const VariantChain& chain) {
+    std::string s = "Chain: " + chain.name + " (ID: " + chain.id + ")\n";
+    s += "  Transitions: " + std::to_string(chain.transitions.size()) + "\n";
+    s += "  Success rate: " + std::to_string(chain.overallSuccessRate()) + "\n";
+    s += "  Active: " + std::to_string(chain.isActive) + "\n";
+    s += "  Progress: " + std::to_string(chain.progress) + "\n";
+    return s;
+}
+
+void saveChains(const std::vector<VariantChain>& chains, const std::string& path) {
+    // JSONなどで保存（簡易実装）
+    // 実際はバイナリまたはJSONで保存
+}
+
+void loadChains(std::vector<VariantChain>& chains, const std::string& path) {
+    // 保存ファイルから読み込み
+}
 std::array<float, 20> generateObservation(const BoardBits& board, const std::deque<PType>& next, int combo, float gameTime) {
     std::array<float, 20> obs{};
     int idx = 0;
