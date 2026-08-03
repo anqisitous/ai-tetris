@@ -319,6 +319,9 @@ void PlayerState::init(int seed) {
     damageBuff = 0;
     score = 0;
     level = 1;
+    pendingSpawnRotDelta = 0;
+    pendingSpawnXDelta = 0;
+    lastSpawnMode = SpawnMode::Normal;
 }
 
 PType PlayerState::popNext() {
@@ -357,6 +360,32 @@ void hardDropPlayer(PlayerState& ps) {
     lockAndSpawn(ps);
 }
 
+// ---- スポーン処理 (先行入力 + 21段目救済ルール) ----
+void spawnPiece(PlayerState& ps) {
+    // 1. 先行入力を適用した基準位置を組み立てる
+    int rot = ((0 + ps.pendingSpawnRotDelta) % 4 + 4) % 4;
+    int x = 3 + ps.pendingSpawnXDelta;
+    int y = 0;
+
+    // 適用し終えたら先行入力バッファはクリアする
+    // (「直近の」先行入力のみを使うという仕様。次のミノには持ち越さない)
+    ps.pendingSpawnRotDelta = 0;
+    ps.pendingSpawnXDelta = 0;
+
+    const MinoShape& shape = SHAPES[(int)ps.curType][rot];
+
+    // 2. その位置(先行入力適用後)で衝突するか判定
+    if (IsCollision(ps.board, shape, x, y)) {
+        // 3. 衝突するなら21段目(y=-1)から出現させる
+        y = -1;
+        ps.lastSpawnMode = SpawnMode::Row21Escape;
+    } else {
+        ps.lastSpawnMode = SpawnMode::Normal;
+    }
+
+    ps.curX = x; ps.curY = y; ps.curRot = rot;
+}
+
 void holdPiece(PlayerState& ps) {
     if (!ps.canHold || ps.gameOver) return;
     if (!ps.holdUsed) {
@@ -366,7 +395,7 @@ void holdPiece(PlayerState& ps) {
     } else {
         std::swap(ps.hold, ps.curType);
     }
-    ps.curX = 3; ps.curY = 0; ps.curRot = 0;
+    spawnPiece(ps);
     ps.canHold = false;
 }
 
@@ -398,7 +427,7 @@ void finishLineClear(PlayerState& ps, int cleared, bool tSpin, bool perfectClear
     ps.score += damage * 10;
     ps.level = 1 + ps.score / 100;
     ps.curType = ps.popNext();
-    ps.curX = 3; ps.curY = 0; ps.curRot = 0;
+    spawnPiece(ps);
     ps.canHold = true;
 }
 

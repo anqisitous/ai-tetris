@@ -8,6 +8,48 @@
 #include <cstdio>
 #include <cmath>
 #include <random>
+#include <fstream>
+
+// ---- 地形テンプレートの読み込み ----
+// 起動時に以下の優先順で地形を組み込む:
+//   1. terrain_cache.dat (バイナリキャッシュ) があればそれを最優先で高速読込
+//   2. fumen_list.txt (地形ID + fumen文字列のリスト) があれば読み込み、
+//      同時にバイナリキャッシュを生成して次回以降に備える
+//   3. templates.tmpl (手書き地形 + fumen埋め込み両対応の定義ファイル)
+// これらは同じTemplateLibraryに統合され、机械的に(探索なしで)先頭から順に
+// マッチングが試みられる。
+void loadAllTemplates(TemplateLibrary& lib) {
+    const char* cachePath = "terrain_cache.dat";
+    const char* fumenListPath = "fumen_list.txt";
+    const char* tmplPath = "templates.tmpl";
+
+    int loadedFromCache = TemplateLoader::loadTerrainCache(cachePath, lib);
+    if (loadedFromCache > 0) {
+        printf("[templates] terrain_cache.dat から %d 件の地形を読み込みました\n", loadedFromCache);
+    } else {
+        // キャッシュが無い/空の場合はfumenリストから読み込み、キャッシュを新規作成する
+        std::ifstream check(fumenListPath);
+        if (check.is_open()) {
+            check.close();
+            int loadedFromFumen = TemplateLoader::loadFumenListFile(fumenListPath, lib, 3);
+            printf("[templates] fumen_list.txt から %d 件の地形を読み込みました\n", loadedFromFumen);
+            if (loadedFromFumen > 0) {
+                bool built = TemplateLoader::buildTerrainCache(fumenListPath, cachePath, 3);
+                if (built) {
+                    printf("[templates] terrain_cache.dat を生成しました (次回起動時はこちらを使用)\n");
+                }
+            }
+        }
+    }
+
+    // 手書きテンプレート(fumen埋め込み含む)は常にtmplファイルから追加で読み込む
+    std::ifstream tmplCheck(tmplPath);
+    if (tmplCheck.is_open()) {
+        tmplCheck.close();
+        int loadedFromTmpl = TemplateLoader::loadTmplFile(tmplPath, lib);
+        printf("[templates] templates.tmpl から %d 件の地形を読み込みました\n", loadedFromTmpl);
+    }
+}
 
 // ---- SDL Globals ----
 SDL_Window* win = nullptr;
@@ -115,6 +157,7 @@ int main() {
     AIState aiState;
     AIState p1AiState;
     TemplateLibrary templateLib;
+    loadAllTemplates(templateLib);
     aiState.templateLib = &templateLib;
     aiState.patternMemory = PatternMemory();
     p1AiState.templateLib = &templateLib;
@@ -141,7 +184,8 @@ int main() {
             if (e.type == SDL_EVENT_QUIT) quit = true;
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 switch (e.key.key) {
-                    case SDLK_T: aiVsAi = !aiVsAi; leftHeld = rightHeld = false; p1.softDrop = false; break;
+                    case SDLK_T: aiVsAi = !aiVsAi; leftHeld = rightHeld = false; p1.softDrop = false;
+                        p1.pendingSpawnRotDelta = 0; p1.pendingSpawnXDelta = 0; break;
                     case SDLK_P: paused = !paused; break;
                     case SDLK_R:
                         p1.init(123); p2.init(456);
@@ -169,23 +213,63 @@ int main() {
                 }
                 if (!paused && !aiVsAi && !p1.gameOver) {
                     switch (e.key.key) {
-                        case SDLK_Z: { const MinoShape& s = SHAPES[(int)p1.curType][(p1.curRot + 3) % 4];
-                            if (!IsCollision(p1.board, s, p1.curX, p1.curY)) p1.curRot = (p1.curRot + 3) % 4; } break;
-                        case SDLK_X: { const MinoShape& s = SHAPES[(int)p1.curType][(p1.curRot + 1) % 4];
-                            if (!IsCollision(p1.board, s, p1.curX, p1.curY)) p1.curRot = (p1.curRot + 1) % 4; } break;
-                        case SDLK_C: holdPiece(p1); break;
-                        case SDLK_UP: hardDropPlayer(p1); break;
+                        case SDLK_Z: {
+                            // 現在のミノへその場で反映(従来通り。キーリピートでは反映しない)
+                            if (!e.key.repeat) {
+                                const MinoShape& s = SHAPES[(int)p1.curType][(p1.curRot + 3) % 4];
+                                if (!IsCollision(p1.board, s, p1.curX, p1.curY)) p1.curRot = (p1.curRot + 3) % 4;
+                            }
+                        } break;
+                        case SDLK_X: {
+                            if (!e.key.repeat) {
+                                const MinoShape& s = SHAPES[(int)p1.curType][(p1.curRot + 1) % 4];
+                                if (!IsCollision(p1.board, s, p1.curX, p1.curY)) p1.curRot = (p1.curRot + 1) % 4;
+                            }
+                        } break;
+                        case SDLK_C: if (!e.key.repeat) holdPiece(p1); break;
+                        case SDLK_UP: if (!e.key.repeat) hardDropPlayer(p1); break;
+                    }
+                }
+            }
+            // ---- 先行入力バッファの更新 ----
+            // 「押している間は記録し続け、離したら記録を消す」方式。
+            // キーリピートイベントも含めて処理し、長押し中は常に最新の状態を保持する。
+            if (!paused && !aiVsAi && !p1.gameOver) {
+                if (e.type == SDL_EVENT_KEY_DOWN) {
+                    switch (e.key.key) {
+                        case SDLK_Z: p1.pendingSpawnRotDelta = 3; break; // 反時計回り。押している間は保持
+                        case SDLK_X: p1.pendingSpawnRotDelta = 1; break; // 時計回り
+                        default: break;
+                    }
+                } else if (e.type == SDL_EVENT_KEY_UP) {
+                    switch (e.key.key) {
+                        case SDLK_Z: case SDLK_X:
+                            // 離したキーが「現在保持中の先行入力」と同じ回転方向のときだけクリアする。
+                            // (Z押しっぱなし→Xも押す→Zだけ離す、のような場合にXの意図を消さないため)
+                            if ((e.key.key == SDLK_Z && p1.pendingSpawnRotDelta == 3) ||
+                                (e.key.key == SDLK_X && p1.pendingSpawnRotDelta == 1)) {
+                                p1.pendingSpawnRotDelta = 0;
+                            }
+                            break;
+                        default: break;
                     }
                 }
             }
             if (!aiVsAi) {
                 if (e.type == SDL_EVENT_KEY_DOWN) {
-                    if (e.key.key == SDLK_LEFT) leftHeld = true;
-                    if (e.key.key == SDLK_RIGHT) rightHeld = true;
+                    if (e.key.key == SDLK_LEFT) { leftHeld = true; p1.pendingSpawnXDelta = -1; }
+                    if (e.key.key == SDLK_RIGHT) { rightHeld = true; p1.pendingSpawnXDelta = 1; }
                     if (e.key.key == SDLK_DOWN) p1.softDrop = true;
                 } else if (e.type == SDL_EVENT_KEY_UP) {
-                    if (e.key.key == SDLK_LEFT) leftHeld = false;
-                    if (e.key.key == SDLK_RIGHT) rightHeld = false;
+                    if (e.key.key == SDLK_LEFT) {
+                        leftHeld = false;
+                        // 離したのが「現在保持中の先行入力」と同じ方向のときだけクリアする
+                        if (p1.pendingSpawnXDelta == -1) p1.pendingSpawnXDelta = rightHeld ? 1 : 0;
+                    }
+                    if (e.key.key == SDLK_RIGHT) {
+                        rightHeld = false;
+                        if (p1.pendingSpawnXDelta == 1) p1.pendingSpawnXDelta = leftHeld ? -1 : 0;
+                    }
                     if (e.key.key == SDLK_DOWN) p1.softDrop = false;
                 }
             }
