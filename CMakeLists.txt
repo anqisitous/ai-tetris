@@ -20,6 +20,7 @@ add_executable(ai-tetris
     ai_core.cpp
     ai_evaluate.cpp
     ai_templates.cpp
+    fumen_decoder.cpp
     pc_parity.cpp
     pc_search.cpp
 )
@@ -44,6 +45,7 @@ add_executable(ai-tetris-tests
     ai_evaluate.cpp
     ai_core.cpp
     ai_templates.cpp
+    fumen_decoder.cpp
     pc_parity.cpp
     pc_search.cpp
 )
