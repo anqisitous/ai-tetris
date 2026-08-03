@@ -14,8 +14,8 @@ MAIN_TARGET := ai-tetris
 TEST_TARGET := ai-tetris-tests
 
 # Source files
-MAIN_SOURCES := main_sdl3.cpp game_engine.cpp ai_core.cpp ai_evaluate.cpp ai_templates.cpp
-TEST_SOURCES := tests/test_main.cpp tests/unit/test_game_engine.cpp tests/unit/test_ai_evaluate.cpp tests/unit/test_ai_core.cpp tests/integration/test_ai_decision.cpp tests/fixtures/test_fixtures.cpp
+MAIN_SOURCES := main_sdl3.cpp game_engine.cpp ai_core.cpp ai_evaluate.cpp ai_templates.cpp pc_parity.cpp pc_search.cpp
+TEST_SOURCES := tests/simple_test_runner.cpp tests/fixtures/test_fixtures.cpp game_engine.cpp ai_core.cpp ai_evaluate.cpp ai_templates.cpp pc_parity.cpp pc_search.cpp
 
 # SDL flags (for main executable)
 SDL_CFLAGS := $(shell pkg-config --cflags sdl3 SDL3_ttf)

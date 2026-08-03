@@ -134,18 +134,24 @@ float calculateParitySpectrum(const BoardBits& board);
 bool isCenterOpen(const BoardBits& board);
 
 // ---- Horizontal Parity (横パリティ) ----
-// 向数を10に含む列の数
+// 段(row)を「埋まっているマス数が奇数か偶数か」で分類し、奇数パリティ段の数を返す。
+// 盤面は10列なので、埋め切った段は必ず偶数(10マス)になる。
+// 詳細な分類とミノ側の分類は pc_parity.h を参照。
 int calculateHorizontalParity(const BoardBits& board);
 
-// ---- Perfect Clear Theorem (パフェ定理) ----
-// 定理: JL+[SZ(90度)+T(90,270度)]=2n+横パリティ
-// Tは0度と180度を含まない (ピースの向きは90度と270度のみ)
-// jl_count: J/Lピースの個数、szt_90_270_count: SZピース(90度)とTピース(90/270度)の合計個数
-bool isPerfectClearTheoremSatisfied(int jl_count, int szt_90_270_count, int horizontal_parity);
+// ---- Perfect Clear Parity (パフェのパリティ条件) ----
+// 奇数パリティのミノ: I(90/270)
+// 偶数パリティのミノ: I(0/180), O, S/Z(0/180)
+// 2:2 のミノ        : T/J/L(全向き), S/Z(90/270)
+// 条件: 奇数パリティ段は偶数個 (合計が奇数個ならパフェ不能) であり、
+//       4*奇数ミノ + 2*(2:2ミノ) が奇数パリティ段の数以上であること。
+//       さらに奇数パリティのミノが奇数個なら偶数パリティのミノも奇数個になる。
+bool isPerfectClearTheoremSatisfied(int odd_minos, int even_minos, int mixed_minos,
+                                    int odd_parity_rows);
 
-// Evaluate perfect clear possibility using the theorem
-float evaluatePerfectClearPossibility(const BoardBits& board, 
-                                       int jl_count, int sz_90_270_count, int t_90_270_count);
+// ネクスト(+ホールド)を使ってパフェのパリティ必要条件を満たせるかを評価する
+// 満たせる: +100 / 満たせない: -100
+float evaluatePerfectClearPossibility(const BoardBits& board, const std::vector<PType>& pieces);
 
 // ---- Spin Detection Polymorphism (T-Spin + Tetris) ----
 // 回転後の状態を表す列挙型

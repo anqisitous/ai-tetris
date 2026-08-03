@@ -109,7 +109,13 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         }
     }
     
-    // 4. Nessun template: valutazione base
+    // 4. パフェが狙えるならその手順を優先する
+    if (state.enablePerfectClear) {
+        AIAction pcAction = tryPerfectClearAction(state, self);
+        if (pcAction.ready) return pcAction;
+    }
+
+    // 5. Nessun template: valutazione base
     auto candidates = EnumerateAllPlacements(self.board, self.curType,
                                               self.canHold, self.hold,
                                               self.btb, self.combo);
@@ -118,7 +124,7 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         return AIAction{3, 0, false, true, true, false};
     }
     
-    // 5. Valuta ogni candidato
+    // 6. Valuta ogni candidato
     struct ScoredCandidate {
         PlacementResult result;
         float score;
@@ -131,13 +137,13 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         scored.push_back({c, score});
     }
     
-    // 6. Ordina per punteggio
+    // 7. Ordina per punteggio
     std::sort(scored.begin(), scored.end(),
               [](const ScoredCandidate& a, const ScoredCandidate& b) {
                   return a.score > b.score;
               });
     
-    // 7. Se il migliore è un nuovo pattern interessante, memorizzalo
+    // 8. Se il migliore è un nuovo pattern interessante, memorizzalo
     if (!scored.empty()) {
         Aspect bestAspect = extractAspect(scored[0].result.board, 0, 
                                            self.combo, self.next);
@@ -151,7 +157,7 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
         }
     }
     
-    // 8. Restituisci l'azione migliore
+    // 9. Restituisci l'azione migliore
     return makeAction(scored[0].result, scored[0].result.usedHold);
 }
 
@@ -190,9 +196,8 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
     // Hole filling evaluation - can we fill holes with current/next/hold pieces?
     score += evaluateHoleFilling(c.board, next, hasHoldI, hasHoldT, curType);
 
-    // Horizontal parity check for perfect clear possibility
-    int hParity = calculateHorizontalParity(c.board);
-    if (hParity % 4 == 1 || hParity % 4 == 3) {
+    // 横パリティ: 奇数パリティ段が奇数個ならパフェ不能
+    if (calculateHorizontalParity(c.board) % 2 == 1) {
         score -= EvalWeights::PARITY_PENALTY;
     }
 
@@ -207,6 +212,33 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
     if (c.usedHold) score -= 2.0f;
 
     return score;
+}
+
+// ---- パフェ手順の一手目を AIAction にする ----
+AIAction tryPerfectClearAction(AIState& state, const PlayerState& self) {
+    AIAction act;
+
+    std::deque<PType> queue = self.next;
+    queue.push_front(self.curType);
+
+    if (!hasPerfectClearChance(self.board, queue, self.hold, self.canHold,
+                               state.pcOptions.maxRows)) {
+        return act;
+    }
+
+    PCSearchResult pc = findPerfectClear(self.board, queue, self.hold, self.canHold,
+                                          state.pcOptions);
+    if (!pc.found || pc.moves.empty()) return act;
+
+    const PCMove& first = pc.moves.front();
+    act.targetX = first.x;
+    act.targetRot = first.rot;
+    act.shouldHold = first.usedHold;
+    act.shouldDrop = true;
+    act.ready = true;
+    act.holdDone = false;
+    act.hasPrediction = false;
+    return act;
 }
 
 // ---- Beam Search ----

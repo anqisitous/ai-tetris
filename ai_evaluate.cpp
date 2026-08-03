@@ -2,6 +2,7 @@
 // ai_evaluate.cpp - Implementazione della valutazione
 // ===================================================================
 #include "ai_evaluate.h"
+#include "pc_parity.h"
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -179,18 +180,11 @@ float evaluateTerrainQuality(const BoardBits& board) {
     // Premio TSD setups
     score += countTSDDoubleSetups(board) * 20.0f;
     
-    // Horizontal parity penalty for perfect clear impossibility
-    // Perfect clear is impossible if the theorem is not satisfied
-    // We use a simplified check here based on horizontal parity
-    int hParity = calculateHorizontalParity(board);
-    // With new definition: horizontal_parity = number of columns with even count
-    // Perfect clear theorem: JL + [SZT(90,270度)] = 2n + hParity 
-    // For simplicity, we keep the parity-based penalty but note this should be
-    // replaced with a proper theorem check when piece counts are available
-    if (hParity % 2 == 1) {
-        score -= 500.0f;  // Strong penalty for impossible perfect clear
+    // 横パリティ: 奇数パリティ段が奇数個なら、どう置いてもパフェにできない
+    if (calculateHorizontalParity(board) % 2 == 1) {
+        score -= 500.0f;
     }
-    
+
     return score;
 }
 
@@ -237,46 +231,33 @@ bool isCenterOpen(const BoardBits& board) {
 }
 
 // ---- Horizontal Parity (横パリティ) ----
-// 各列のブロック数が向数か偶数かをカイント
-// 横パリティ = 向数を10に含む列の数
+// 奇数パリティ段 (埋まっているマス数が奇数の段) の数
 int calculateHorizontalParity(const BoardBits& board) {
-    int evenColumns = 0;
-    for (int c = 0; c < BOARD_W; ++c) {
-        int count = 0;
-        for (int r = 0; r < BOARD_H; ++r) {
-            if (board[r] & (1 << c)) count++;
-        }
-        if (count % 2 == 0 && count > 0) evenColumns++;
-    }
-    return evenColumns;
+    return countOddParityRows(board);
 }
 
-// ---- Perfect Clear Theorem (パフェ定理) ----
-// 定理: JL+[SZ(90度)+T(90,270度)]=2n+横パリティ
-// Tは0度と180度を含まない (ピースの向きは90度と270度のみ)
-// This must hold modulo 2 for perfect clear to be possible
-bool isPerfectClearTheoremSatisfied(int jl_count, int szt_90_270_count, int horizontal_parity) {
-    // The theorem states: JL + [SZ(90度) + T(90,270度)] = 2n + hParity
-    // T excludes 0度 and 180度 (only 90度 and 270度)
-    // Modulo 2: (JL + SZT_90_270 +) % 2 == (hParity) % 2
-    int leftSide = (jl_count + szt_90_270_count) % 2;
-    int rightSide = horizontal_parity % 2;
-    return leftSide == rightSide;
+// ---- Perfect Clear Parity (パフェのパリティ条件) ----
+bool isPerfectClearTheoremSatisfied(int odd_minos, int even_minos, int mixed_minos,
+                                    int odd_parity_rows) {
+    // 奇数パリティ段が奇数個なら、全ての段を偶数(10マス)にできない
+    if (odd_parity_rows % 2 != 0) return false;
+
+    ParityCombination combo;
+    combo.oddMinos = odd_minos;
+    combo.evenMinos = even_minos;
+    combo.mixedMinos = mixed_minos;
+
+    // 奇数パリティ段を解消しきれるか
+    if (combo.oddRowCoverage() < odd_parity_rows) return false;
+
+    // 奇数ミノが奇数個なら偶数ミノも奇数個
+    return combo.followsOddCountRule();
 }
 
-// ---- Evaluate Perfect Clear Possibility using Theorem ----
-// Returns a score based on how close we are to satisfying the perfect clear theorem
-// Higher score means better chance for perfect clear
-float evaluatePerfectClearPossibility(const BoardBits& board, 
-                                       int jl_count, int sz_90_count, int t_90_270_count) {
-    int hParity = calculateHorizontalParity(board);
-    
-    int szt_90_270_count = sz_90_count + t_90_270_count;
-    if (isPerfectClearTheoremSatisfied(jl_count, szt_90_270_count, hParity)) {
-        return 100.0f;  // Perfect clear is possible
-    } else {
-        return -100.0f;  // Perfect clear is impossible
-    }
+// ---- パフェ可能性の評価 ----
+float evaluatePerfectClearPossibility(const BoardBits& board, const std::vector<PType>& pieces) {
+    HorizontalParityInfo info = analyzeHorizontalParity(board);
+    return isPerfectClearParityPossible(info, pieces) ? 100.0f : -100.0f;
 }
 
 // ===================================================================
@@ -850,14 +831,9 @@ float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& 
     // 地形の評価
     score += evaluateSurface(board);
 
-    // 横パリティの評価
-    int hParity = calculateHorizontalParity(board);
-    // With new definition: horizontal_parity = number of columns with even count
-    // Perfect clear theorem: JL + [SZ(90度) + T(90,270度)] = 2n + hParity (T excludes 0度 and 180度)
-    // For simplicity, we keep the parity-based penalty but note this should be
-    // replaced with a proper theorem check when piece counts are available
-    if (hParity % 2 == 1) {
-        score -= EvalWeights::PARITY_PENALTY;  // パフェ不可能
+    // 横パリティの評価: 奇数パリティ段が奇数個ならパフェ不能
+    if (calculateHorizontalParity(board) % 2 == 1) {
+        score -= EvalWeights::PARITY_PENALTY;
     }
 
     return score;
