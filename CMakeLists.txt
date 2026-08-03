@@ -25,7 +25,12 @@ add_executable(ai-tetris
 )
 
 if(SDL3_FOUND AND SDL3_ttf_FOUND)
-    target_link_libraries(ai-tetris PRIVATE SDL3::SDL3 SDL3::SDL3_ttf)
+    # SDL3_ttf exports SDL3_ttf::SDL3_ttf; older builds used SDL3::SDL3_ttf.
+    if(TARGET SDL3_ttf::SDL3_ttf)
+        target_link_libraries(ai-tetris PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+    else()
+        target_link_libraries(ai-tetris PRIVATE SDL3::SDL3 SDL3::SDL3_ttf)
+    endif()
 endif()
 
 # Include directories

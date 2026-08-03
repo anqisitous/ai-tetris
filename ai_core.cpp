@@ -214,6 +214,15 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
     return score;
 }
 
+// ---- 実戦用の指し手決定 ----
+AIAction decideAIMove(AIState& state, PlayerState& self) {
+    if (state.enablePerfectClear) {
+        AIAction pcAction = tryPerfectClearAction(state, self);
+        if (pcAction.ready) return pcAction;
+    }
+    return makeActionFromBeam(beamSearch(state, self, 20, 3));
+}
+
 // ---- パフェ手順の一手目を AIAction にする ----
 AIAction tryPerfectClearAction(AIState& state, const PlayerState& self) {
     AIAction act;
