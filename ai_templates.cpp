@@ -10,28 +10,43 @@
 #include <cstdint>
 
 // ---- Matching di un template attivo ----
-bool ActiveTemplate::matches(const BoardBits& board, 
-                              const std::deque<PType>& bag) const {
-    auto& stage = definition->stages.at(currentStage);
+bool ActiveTemplate::matches(const BoardBits& board,const std::vector<PType>& bag) const {
     
-    // stageが指定する探索深さ (最上部から何行分を見るか) だけ地形を抽出
-    auto topRows = GetTopNRows(board, stage.searchDepth);
+    // 1. definition のチェック
+    if (!definition) {
+        return false;
+    }
     
-    // Verifica board corrente
-    if (topRows != stage.boards[currentBoardIndex]) return false;
+    // 2. stage の存在チェック
+    auto it = definition->stages.find(currentStage);
+    if (it == definition->stages.end()) {
+        return false;
+    }
+    const auto& stage = it->second;  // const参照で取得
     
-    // Verifica condizioni bag
-    for (auto& cond : stage.conditions) {
+    std::bitset<30> topRows = GetTopNRows(board, stage.searchDepth);
+    
+    if (currentBoardIndex >= stage.boards.size()) {
+        return false;
+    }
+    if (topRows != stage.boards[currentBoardIndex]) {
+        return false;
+    }
+    
+    for (const auto& cond : stage.conditions) {
         bool seenBefore = false;
-        for (auto& p : bag) {
-            if (p == cond.before) seenBefore = true;
-            if (p == cond.after && !seenBefore) return false;
+        for (PType p : bag) {  // PTypeは小さなenum → 値コピー
+            if (p == cond.before) {
+                seenBefore = true;
+            }
+            if (p == cond.after && !seenBefore) {
+                return false;
+            }
         }
     }
     
     return true;
 }
-
 // ---- Cerca template attivi ----
 std::vector<ActiveTemplate> TemplateLibrary::match(
     const BoardBits& board, const std::deque<PType>& bag) const {
