@@ -74,6 +74,10 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
                          const std::deque<PType>& next,
                          PType hold, int btb, int combo);
 
+// ---- 実戦用の指し手決定 ----
+// パフェが狙えるならその手順を優先し、それ以外は Beam Search を使う。
+AIAction decideAIMove(AIState& state, PlayerState& self);
+
 // ---- Perfect Clear ----
 // 盤面が低いときにパフェ手順を探し、見つかれば最初の一手を返す。
 // 見つからなければ ready = false の AIAction を返す。

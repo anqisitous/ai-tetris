@@ -34,7 +34,7 @@ struct PCSearchOptions {
     int maxRows = 4;              // パフェを狙う最大段数 (下から)
     bool allowHold = true;        // ホールドを使うか
     bool useParityPruning = true; // 横パリティによる枝刈り
-    size_t nodeLimit = 300000;    // 展開ノード数の上限
+    size_t nodeLimit = 50000;     // 展開ノード数の上限（実戦でフレームを止めない程度）
 };
 
 // ---- 探索結果 ----

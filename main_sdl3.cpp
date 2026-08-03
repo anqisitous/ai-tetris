@@ -208,8 +208,7 @@ int main() {
                 p1AiState.thinkTimer += dt;
                 if (!p1Act.ready && p1AiState.thinkTimer >= aiThinkInterval) {
                     p1AiState.thinkTimer = 0;
-                    BeamNode node = beamSearch(p1AiState, p1, 20, 3);
-                    p1Act = makeActionFromBeam(node);
+                    p1Act = decideAIMove(p1AiState, p1);
                 }
                 executeAI(p1, p1Act, dt, aiDasDelay, aiArrDelay);
             }
@@ -218,8 +217,7 @@ int main() {
                 aiState.thinkTimer += dt;
                 if (!aiAct.ready && aiState.thinkTimer >= aiThinkInterval) {
                     aiState.thinkTimer = 0;
-                    BeamNode node = beamSearch(aiState, p2, 20, 3);
-                    aiAct = makeActionFromBeam(node);
+                    aiAct = decideAIMove(aiState, p2);
                 }
                 executeAI(p2, aiAct, dt, aiDasDelay, aiArrDelay);
             }
