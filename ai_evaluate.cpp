@@ -1041,17 +1041,78 @@ std::bitset<30> GetTop3Rows(const BoardBits& board) {
     return bits;
 }
 
-// ---- Finestra di righe ----
-std::bitset<30> GetRows(const BoardBits& board, int startRow, int endRow) {
+// ai_evaluate.h に追加
+inline std::bitset<30> GetTopNRows(const BoardBits& board, int depth) {
+    if (depth < 1 || depth > 3) depth = 3;
     std::bitset<30> bits;
-    for (int r = startRow; r < endRow && r < BOARD_H; ++r) {
-        int localRow = r - startRow;
+    for (int r = 0; r < depth; ++r) {
+        int row = BOARD_H - depth + r;
+        if (row < 0 || row >= BOARD_H) continue;
         for (int c = 0; c < BOARD_W; ++c) {
-            if (board[r] & (1 << c)) bits.set(localRow * BOARD_W + c);
+            if (board[row] & (1 << c)) bits.set(r * BOARD_W + c);
         }
     }
     return bits;
 }
+
+// ============================================================
+// ニューロン組み込み用パリティ特徴量リスト
+// ============================================================
+
+std::vector<float> extractParityFeatures(const BoardBits& board) {
+    std::vector<float> features;
+    
+    std::array<int, 10> heights;
+    for (int c = 0; c < 10; ++c) {
+        heights[c] = getColumnHeight(board, c);
+    }
+    
+    // ---- 1. 各列の高さ mod4（10個） ----
+    for (int c = 0; c < 10; ++c) {
+        features.push_back(static_cast<float>(heights[c] % 4) / 4.0f);
+    }
+    
+    // ---- 2. 左側（0-4列） ----
+    // くぼみの高さは合計に足す
+    // 立ち上がった地点の合計値（くぼみ含む）mod4を記録
+    int currentMax = heights[0];
+    int totalGap = 0;  // くぼみの合計
+    for (int c = 1; c < 5; ++c) {
+        totalGap += (currentMax - heights[c]);  // くぼみを合計に足す
+        if (heights[c] > currentMax) {
+            // 立ち上がった → ここまでの合計値 mod4 を記録
+            features.push_back(static_cast<float>(totalGap % 4) / 4.0f);
+            currentMax = heights[c];
+            totalGap = 0;
+        }
+    }
+    // 最後：残りの合計値 mod4
+    features.push_back(static_cast<float>(totalGap % 4) / 4.0f);
+    
+    // ---- 3. 右側（5-9列） ----
+    currentMax = heights[9];
+    totalGap = 0;
+    for (int c = 8; c >= 5; --c) {
+        totalGap += (currentMax - heights[c]);
+        if (heights[c] > currentMax) {
+            features.push_back(static_cast<float>(totalGap % 4) / 4.0f);
+            currentMax = heights[c];
+            totalGap = 0;
+        }
+    }
+    features.push_back(static_cast<float>(totalGap % 4) / 4.0f);
+    
+    // ---- 4. 左右間の隙間 ----
+    int leftMax = *std::max_element(heights.begin(), heights.begin() + 5);
+    int rightMax = *std::max_element(heights.begin() + 5, heights.end());
+    features.push_back(static_cast<float>(std::abs(leftMax - rightMax) % 4) / 4.0f);
+    
+    return features;
+}
+
+
+
+
 
 // ---- LSH hash ----
 uint64_t lshHash(const std::vector<float>& vec, int bits) {
