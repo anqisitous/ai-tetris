@@ -1,33 +1,142 @@
-name: Open Code Review (Full Repository)
+name: GLM-4.7 Full Repository Code Review
+
 on:
-  workflow_dispatch: # 手動実行（ボタン1つで全コードレビュー）
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   review:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '24'
-      - name: Install Tools
-        run: npm install -g @alibaba-group/open-code-review
-      - name: Run Full Repository Scan
-        shell: bash
+          python-version: "3.12"
+
+      - name: Install OpenAI SDK
         run: |
-          set -o pipefail
-          echo "=== AIによる全体コードスキャンを実行中 ==="
-          ocr scan --audience agent --format markdown | tee review.md
+          pip install openai
+
+      - name: Create Code Review Script
+        run: |
+          cat > review.py <<'PY'
+          import os
+          import subprocess
+          from openai import OpenAI
+
+          client = OpenAI(
+              api_key=os.environ["CEREBRAS_API_KEY"],
+              base_url="https://api.cerebras.ai/v1"
+          )
+
+          files = subprocess.check_output(
+              ["git", "ls-files"],
+              text=True
+          ).splitlines()
+
+          code = ""
+
+          ignore = [
+              ".png",
+              ".jpg",
+              ".jpeg",
+              ".gif",
+              ".zip",
+              ".exe",
+              ".bin"
+          ]
+
+          for f in files:
+              if any(f.endswith(x) for x in ignore):
+                  continue
+
+              try:
+                  with open(f, "r", encoding="utf-8") as file:
+                      code += "\n\n===== FILE: " + f + " =====\n"
+                      code += file.read()
+              except:
+                  pass
+
+          prompt = f"""
+          あなたはシニアソフトウェアエンジニアです。
+
+          以下のGitHubリポジトリ全体をレビューしてください。
+
+          重点項目:
+          - 致命的バグ
+          - C/C++の未定義動作
+          - メモリリーク
+          - パフォーマンス問題
+          - 並列処理問題
+          - 設計上の問題
+          - セキュリティ問題
+          - 改善案
+
+          出力形式:
+
+          # Critical
+          問題
+
+          # High
+          問題
+
+          # Medium
+          問題
+
+          # Low
+          問題
+
+          # Summary
+          全体評価
+
+
+          コード:
+
+          {code}
+          """
+
+          response = client.chat.completions.create(
+              model="zai-glm-4.7",
+              messages=[
+                  {
+                      "role":"system",
+                      "content":"You are an expert code reviewer."
+                  },
+                  {
+                      "role":"user",
+                      "content":prompt
+                  }
+              ],
+              max_completion_tokens=40000,
+              temperature=0.2,
+              extra_body={
+                  "clear_thinking": False
+              }
+          )
+
+          result = response.choices[0].message.content
+
+          with open("review.md","w",encoding="utf-8") as f:
+              f.write(result)
+
+          PY
+
+      - name: Run GLM-4.7 Review
         env:
-          OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
-          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
-          OCR_LLM_MODEL: ${{ secrets.OCR_LLM_MODEL }}
-          OCR_USE_ANTHROPIC: "false"
-      - name: Upload Review as Artifact
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: |
+          python review.py
+
+      - name: Upload Review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: code-review-result
+          name: glm47-code-review
           path: review.md
           retention-days: 14
