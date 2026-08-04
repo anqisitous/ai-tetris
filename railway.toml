@@ -1,0 +1,15 @@
+# railway.toml - プロジェクトルートに配置
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacks]
+plan = '''
+[phases.setup]
+nixPkgs = ["gcc", "cmake", "make"]
+
+[phases.install]
+cmds = ["g++ -O3 -std=c++17 -pthread ai_server.cpp -o ai_server"]
+
+[phases.start]
+cmd = "./ai_server"
+'''
