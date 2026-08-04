@@ -1,7 +1,7 @@
 name: Open Code Review (Full Repository)
 
 on:
-  workflow_dispatch: # 手動トリガー（ボタン1つで実行）
+  workflow_dispatch: # 手動実行（ボタン1つで全コードレビュー）
 
 jobs:
   review:
@@ -24,9 +24,9 @@ jobs:
           set -e
           echo "=== リポジトリ全体のコードを集約中 ==="
           
-          # 不要なディレクトリやビルド生成物・画像等を除外して全コードを1つのテキスト(codebase.txt)にパック
+          # repomix のオプションを --output に修正済み
           repomix \
-            --out codebase.txt \
+            --output codebase.txt \
             --ignore "node_modules/**,.git/**,dist/**,build/**,coverage/**,package-lock.json,pnpm-lock.yaml,yarn.lock,*.png,*.jpg,*.svg,*.pdf"
 
       - name: Run Full Code Review
