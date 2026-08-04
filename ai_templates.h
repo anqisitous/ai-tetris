@@ -19,6 +19,7 @@ struct BagCondition {
 // ---- Stage di un template ----
 struct StageDefinition {
     int numBoards;
+    int searchDepth = 3;  // GetTopNRows/pageToTopNRowsで抽出する上位行数(1〜3)
     std::vector<std::bitset<30>> boards;
     std::vector<BagCondition> conditions;
     std::string nextStage;  // Prossimo stage (vuoto se ultimo)
@@ -56,8 +57,12 @@ struct ActiveTemplate {
         return false;
     }
     
-    bool matches(const BoardBits& board, const std::deque<PType>& bag) const;
+    bool matches(const BoardBits& board, const std::vector<PType>& bag) const;
 };
+
+// ---- BoardBitsの最上段からdepth行(1〜3)を抽出しbitsetへ詰める ----
+// localRow 0が最上段(fumen_decoder.h::pageToTopNRowsと同一の規約)。
+std::bitset<30> GetTopNRows(const BoardBits& board, int depth);
 
 // ---- Libreria template ----
 class TemplateLibrary {
@@ -70,7 +75,7 @@ public:
     }
     
     std::vector<ActiveTemplate> match(const BoardBits& board, 
-                                       const std::deque<PType>& bag) const;
+                                       const std::vector<PType>& bag) const;
     
     const std::vector<TemplateDefinition>& getAll() const { return templates; }
 };

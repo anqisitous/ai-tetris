@@ -297,16 +297,16 @@ void PlayerState::init(int seed) {
             std::shuffle(bag.begin(), bag.end(), rng);
         }
         next.push_back(bag.front());
-        bag.pop_front();
+        bag.erase(bag.begin());
     }
-    curType = next.front(); next.pop_front();
+    curType = next.front(); next.erase(next.begin());
     while (next.size() < 5) {
         if (bag.empty()) {
             for (int i = 0; i < 7; ++i) bag.push_back(ALL_TYPES[i]);
             std::shuffle(bag.begin(), bag.end(), rng);
         }
         next.push_back(bag.front());
-        bag.pop_front();
+        bag.erase(bag.begin());
     }
     hold = PType::I;
     canHold = true;
@@ -326,13 +326,13 @@ void PlayerState::init(int seed) {
 
 PType PlayerState::popNext() {
     PType t = next.front();
-    next.pop_front();
+    next.erase(next.begin());
     if (bag.empty()) {
         for (int i = 0; i < 7; ++i) bag.push_back(ALL_TYPES[i]);
         std::shuffle(bag.begin(), bag.end(), std::mt19937(std::random_device{}()));
     }
     next.push_back(bag.front());
-    bag.pop_front();
+    bag.erase(bag.begin());
     return t;
 }
 

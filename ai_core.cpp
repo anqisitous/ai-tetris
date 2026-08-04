@@ -167,7 +167,7 @@ AIAction decideAI(AIState& state, PlayerState& self, PlayerState& opp) {
 // next/hold/btb/combo はその時点でのプレイヤー状態を表す。
 float evaluateCandidate(AIState& state, const PlacementResult& c,
                          const BoardBits& beforeBoard, PType curType,
-                         const std::deque<PType>& next,
+                         const std::vector<PType>& next,
                          PType hold, int btb, int combo) {
     float score = 0.0f;
 
@@ -218,7 +218,7 @@ float evaluateCandidate(AIState& state, const PlacementResult& c,
 AIAction tryPerfectClearAction(AIState& state, const PlayerState& self) {
     AIAction act;
 
-    std::deque<PType> queue = self.next;
+    std::deque<PType> queue(self.next.begin(), self.next.end());
     queue.push_front(self.curType);
 
     if (!hasPerfectClearChance(self.board, queue, self.hold, self.canHold,
@@ -320,7 +320,7 @@ BeamNode beamSearch(AIState& state, PlayerState& self,
             }
 
             PType pieceType = parent.next.front();
-            std::deque<PType> remainingNext(parent.next.begin() + 1, parent.next.end());
+            std::vector<PType> remainingNext(parent.next.begin() + 1, parent.next.end());
 
             auto candidates = EnumerateAllPlacements(
                 parent.board, pieceType, parent.canHold, parent.hold,

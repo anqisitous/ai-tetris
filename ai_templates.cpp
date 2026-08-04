@@ -9,6 +9,21 @@
 #include <cstring>
 #include <cstdint>
 
+// ---- BoardBitsの最上段からdepth行を抽出 ----
+std::bitset<30> GetTopNRows(const BoardBits& board, int depth) {
+    if (depth < 1 || depth > 3) depth = 3;
+    std::bitset<30> bits;
+    for (int r = 0; r < depth; ++r) {
+        int y = BOARD_H - depth + r;  // 上からdepth行のうちr行目
+        if (y < 0 || y >= static_cast<int>(board.size())) continue;
+        uint16_t row = board[y];
+        for (int x = 0; x < BOARD_W; ++x) {
+            if (row & (1 << x)) bits.set(r * BOARD_W + x);
+        }
+    }
+    return bits;
+}
+
 // ---- Matching di un template attivo ----
 bool ActiveTemplate::matches(const BoardBits& board,const std::vector<PType>& bag) const {
     
@@ -49,7 +64,7 @@ bool ActiveTemplate::matches(const BoardBits& board,const std::vector<PType>& ba
 }
 // ---- Cerca template attivi ----
 std::vector<ActiveTemplate> TemplateLibrary::match(
-    const BoardBits& board, const std::deque<PType>& bag) const {
+    const BoardBits& board, const std::vector<PType>& bag) const {
     
     std::vector<ActiveTemplate> active;
     

@@ -10,8 +10,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required packages (optional for tests)
-find_package(SDL3 QUIET)
-find_package(SDL3_ttf QUIET)
+# macOSでは同梱の SDL3.framework / SDL3_ttf.framework を優先して使う。
+# これらはリポジトリ直下に配布バイナリとして含まれており、
+# brew等の外部インストールを必要としない。
+set(BUNDLED_SDL3_FRAMEWORK "${CMAKE_CURRENT_SOURCE_DIR}/SDL3.framework")
+set(BUNDLED_SDL3_TTF_FRAMEWORK "${CMAKE_CURRENT_SOURCE_DIR}/SDL3_ttf.framework")
+
+if(APPLE AND EXISTS "${BUNDLED_SDL3_FRAMEWORK}" AND EXISTS "${BUNDLED_SDL3_TTF_FRAMEWORK}")
+    set(USE_BUNDLED_SDL3 ON)
+else()
+    set(USE_BUNDLED_SDL3 OFF)
+    find_package(SDL3 QUIET)
+    find_package(SDL3_ttf QUIET)
+endif()
 
 # Main executable
 add_executable(ai-tetris 
@@ -25,7 +36,22 @@ add_executable(ai-tetris
     pc_search.cpp
 )
 
-if(SDL3_FOUND AND SDL3_ttf_FOUND)
+if(USE_BUNDLED_SDL3)
+    # -F でframework検索パスを追加し、-framework でリンクする。
+    # ヘッダは SDL3.framework/Headers/SDL3/... ではなく
+    # SDL3.framework/Headers/... 直下にフラットに置かれているため、
+    # #include <SDL3/SDL.h> を解決するには親ディレクトリをインクルードパスに
+    # 追加した上でframework検索に委ねる必要がある。
+    target_compile_options(ai-tetris PRIVATE
+        -F${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    target_link_options(ai-tetris PRIVATE
+        -F${CMAKE_CURRENT_SOURCE_DIR}
+        -framework SDL3
+        -framework SDL3_ttf
+        -Wl,-rpath,@executable_path/../Frameworks
+    )
+elseif(SDL3_FOUND AND SDL3_ttf_FOUND)
     target_link_libraries(ai-tetris PRIVATE SDL3::SDL3 SDL3::SDL3_ttf)
 endif()
 

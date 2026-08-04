@@ -356,7 +356,7 @@ float SpinEvaluator::getScore(SpinType type, bool isBTB) const {
     return detector->getScore(type, isBTB);
 }
 
-float SpinEvaluator::evaluate(const BoardBits& board, const std::deque<PType>& next) {
+float SpinEvaluator::evaluate(const BoardBits& board, const std::vector<PType>& next) {
     float score = 0.0f;
     
     // 1. Evaluate all possible T-Spin positions for current board
@@ -675,7 +675,7 @@ TetrisWellEvaluation evaluateTetrisWell(const ConnectedComponent& comp, const Bo
 }
 
 // ---- 全ての穴を評価 ----
-float evaluateAllHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI) {
+float evaluateAllHoles(const BoardBits& board, const std::vector<PType>& next, bool hasHoldI) {
     auto info = analyzeReachableSpaces(board);
 
     float totalScore = 0.0f;
@@ -710,7 +710,7 @@ float evaluateAllHoles(const BoardBits& board, const std::deque<PType>& next, bo
 }
 
 // ---- TSD候補を評価 ----
-float evaluateTSDCandidates(const BoardBits& board, const std::deque<PType>& next, bool hasHoldT) {
+float evaluateTSDCandidates(const BoardBits& board, const std::vector<PType>& next, bool hasHoldT) {
     float score = 0.0f;
 
     // Tピースが次に来るか、またはHoldにあるか
@@ -819,7 +819,7 @@ float evaluatePostClear(const BoardBits& board) {
 }
 
 // ---- 全てを統合した地形評価 ----
-float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI, bool hasHoldT) {
+float evaluateTerrainWithHoles(const BoardBits& board, const std::vector<PType>& next, bool hasHoldI, bool hasHoldT) {
     float score = 0.0f;
 
     // 穴の評価
@@ -922,7 +922,7 @@ HoleFillEvaluation canFillHoleWithPiece(const ConnectedComponent& hole, PType pi
 }
 
 // ---- 穴を埋める評価 ----
-float evaluateHoleFilling(const BoardBits& board, const std::deque<PType>& next, 
+float evaluateHoleFilling(const BoardBits& board, const std::vector<PType>& next, 
                          bool hasHoldI, bool hasHoldT, PType currentPiece) {
     auto info = analyzeReachableSpaces(board);
     float totalScore = 0.0f;
@@ -981,7 +981,7 @@ float evaluateHoleFilling(const BoardBits& board, const std::deque<PType>& next,
 
 // ---- Estrai aspetto ----
 Aspect extractAspect(const BoardBits& board, float timingDiff, int combo,
-                     const std::deque<PType>& next) {
+                     const std::vector<PType>& next) {
     Aspect a;
     a.snapshot = board;
     auto& v = a.values;

@@ -87,7 +87,7 @@ namespace std {
 }
 
 // ---- VariantSignature 生成関数 ----
-VariantSignature recognizeVariant(const BoardBits& board, const std::deque<PType>& next = {});
+VariantSignature recognizeVariant(const BoardBits& board, const std::vector<PType>& next = {});
 
 // ============================================================
 // 到達可能空間の連結成分
@@ -149,7 +149,7 @@ struct Aspect {
 
 // ---- Funzioni di valutazione ----
 Aspect extractAspect(const BoardBits& board, float timingDiff = 0.0f,
-                     int combo = 0, const std::deque<PType>& next = {});
+                     int combo = 0, const std::vector<PType>& next = {});
 
 float aspectDistance(const Aspect& a, const Aspect& b);
 
@@ -232,7 +232,7 @@ public:
     SpinEvaluator(bool btb = false);
     
     // T-Spinの可能性を評価
-    float evaluate(const BoardBits& board, const std::deque<PType>& next);
+    float evaluate(const BoardBits& board, const std::vector<PType>& next);
     
     // BTB状態を考慮
     void setBTB(bool btb);
@@ -264,10 +264,10 @@ HoleEvaluation evaluateHole(const ConnectedComponent& comp, const BoardBits& boa
 TetrisWellEvaluation evaluateTetrisWell(const ConnectedComponent& comp, const BoardBits& board);
 
 // 全ての穴を評価
-float evaluateAllHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI);
+float evaluateAllHoles(const BoardBits& board, const std::vector<PType>& next, bool hasHoldI);
 
 // TSD候補を評価
-float evaluateTSDCandidates(const BoardBits& board, const std::deque<PType>& next, bool hasHoldT);
+float evaluateTSDCandidates(const BoardBits& board, const std::vector<PType>& next, bool hasHoldT);
 
 // 地形（Surface）の評価
 float evaluateSurface(const BoardBits& board);
@@ -276,14 +276,14 @@ float evaluateSurface(const BoardBits& board);
 float evaluatePostClear(const BoardBits& board);
 
 // 全てを統合した地形評価
-float evaluateTerrainWithHoles(const BoardBits& board, const std::deque<PType>& next, bool hasHoldI, bool hasHoldT);
+float evaluateTerrainWithHoles(const BoardBits& board, const std::vector<PType>& next, bool hasHoldI, bool hasHoldT);
 
 // ---- Hole Filling Evaluation ----
 // 穴を埋めるピースの判定
 HoleFillEvaluation canFillHoleWithPiece(const ConnectedComponent& hole, PType pieceType);
 
 // 穴を埋める評価
-float evaluateHoleFilling(const BoardBits& board, const std::deque<PType>& next, 
+float evaluateHoleFilling(const BoardBits& board, const std::vector<PType>& next, 
                          bool hasHoldI, bool hasHoldT, PType currentPiece);
 
 // ---- Utilità ----

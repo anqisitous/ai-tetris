@@ -33,6 +33,9 @@ constexpr int WIN_H = 780;
 enum class PType : int { I = 0, O, T, S, Z, J, L, COUNT };
 extern const PType ALL_TYPES[7];
 
+// ---- スポーン方式 (通常/21段目救済) ----
+enum class SpawnMode { Normal, Row21Escape };
+
 // ---- Colori SDL ----
 extern const SDL_Color COLORS[NUM_PTYPES];
 
@@ -87,7 +90,10 @@ struct PlayerState {
     BoardBits board = {};
     PType curType = PType::I;
     int curX = 3, curY = 0, curRot = 0;
-    std::deque<PType> bag, next;
+    int pendingSpawnRotDelta = 0;  // スポーン時に先行適用する回転(押しっぱなし対応)
+    int pendingSpawnXDelta = 0;    // スポーン時に先行適用する左右移動
+    SpawnMode lastSpawnMode = SpawnMode::Normal;  // 直近スポーンが救済発動したか
+    std::vector<PType> bag, next;
     PType hold = PType::I;
     bool canHold = true, holdUsed = false;
     int combo = 0, btb = 0;
