@@ -1,45 +1,33 @@
 name: Open Code Review (Full Repository)
-
 on:
   workflow_dispatch: # 手動実行（ボタン1つで全コードレビュー）
-
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
-
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: '24'
-
       - name: Install Tools
-        run: npm install -g @alibaba-group/open-code-review repomix
-
-      - name: Aggregate Entire Repository
-        shell: bash
-        run: |
-          set -e
-          echo "=== リポジトリ全体のコードを集約中 ==="
-          
-          # repomix のオプションを --output に修正済み
-          repomix \
-            --output codebase.txt \
-            --ignore "node_modules/**,.git/**,dist/**,build/**,coverage/**,package-lock.json,pnpm-lock.yaml,yarn.lock,*.png,*.jpg,*.svg,*.pdf"
-
-      - name: Run Full Code Review
+        run: npm install -g @alibaba-group/open-code-review
+      - name: Run Full Repository Scan
         shell: bash
         run: |
           set -o pipefail
-          echo "=== AIによる全体コードレビューを実行中 ==="
-          ocr review --file codebase.txt --format markdown | tee review.md
+          echo "=== AIによる全体コードスキャンを実行中 ==="
+          ocr scan --audience agent --format markdown | tee review.md
         env:
           OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
           OCR_LLM_AUTH_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           OCR_LLM_MODEL: ${{ secrets.OCR_LLM_MODEL }}
           OCR_LLM_USE_ANTHROPIC: ${{ secrets.OCR_LLM_USE_ANTHROPIC }}
-
-      - name: Show Review Output in Logs
-        run: cat review.md
+      - name: Upload Review as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-review-result
+          path: review.md
+          retention-days: 14
