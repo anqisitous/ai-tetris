@@ -1,10 +1,7 @@
-name: Open Code Review
+name: Open Code Review (Manual)
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-  issue_comment:
-    types: [created]
+  workflow_dispatch:   # 手動トリガー
 
 jobs:
   review:
@@ -25,15 +22,12 @@ jobs:
 
       - name: Run OCR Review
         run: |
-          ocr review --from origin/${{ github.event.pull_request.base.ref }} \
-                     --to origin/${{ github.event.pull_request.head.ref }} \
-                     --format json > review.json
-
-      - name: Post Review Comments
-        run: ocr github-comment --input review.json
+          ocr review --from main --to feature-branch --format markdown | tee review.md
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
           OCR_LLM_AUTH_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           OCR_LLM_MODEL: ${{ secrets.OCR_LLM_MODEL }}
           OCR_LLM_USE_ANTHROPIC: ${{ secrets.OCR_LLM_USE_ANTHROPIC }}
+
+      - name: Show Review Output in Logs
+        run: cat review.md
