@@ -2,27 +2,40 @@ name: Open Code Review (Manual)
 
 on:
   workflow_dispatch:   # 手動トリガー
+    inputs:
+      target_branch:
+        description: 'レビュー対象（比較先）のブランチ名 (例: feature-branch)'
+        required: true
+        default: 'feature-branch'
+      base_branch:
+        description: 'ベース（比較元）のブランチ名 (例: main)'
+        required: true
+        default: 'main'
 
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      # 各 Action のバージョンを最新（@v5 等）に上げて Node.js 20 警告を回避
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 24
+          node-version: '24'
 
       - name: Install OCR
         run: npm install -g @alibaba-group/open-code-review
 
       - name: Run OCR Review
+        shell: bash
+        # pipefail を有効にして ocr コマンドが失敗した際にステップを異常終了させる
         run: |
-          ocr review --from main --to feature-branch --format markdown | tee review.md
+          set -o pipefail
+          ocr review --from "${{ github.event.inputs.base_branch }}" --to "${{ github.event.inputs.target_branch }}" --format markdown | tee review.md
         env:
           OCR_LLM_URL: ${{ secrets.OCR_LLM_URL }}
           OCR_LLM_AUTH_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
