@@ -83,7 +83,8 @@ jobs:
               data=json.dumps(payload).encode("utf-8"),
               headers={
                   "Authorization": "Bearer " + os.environ["CEREBRAS_API_KEY"],
-                  "Content-Type": "application/json"
+                  "Content-Type": "application/json",
+                  "User-Agent": "cerebras-cloud-sdk-python/1.0"
               },
               method="POST"
           )
