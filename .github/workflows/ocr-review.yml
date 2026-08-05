@@ -1,77 +1,108 @@
-import os
-import subprocess
-import json
-import urllib.request
+name: GLM-4.7 Full Repository Code Review
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Create Code Review Script
+        run: |
+          cat > review.py <<'PY'
+          import os
+          import subprocess
+          import json
+          import urllib.request
 
-files = subprocess.check_output(
-    ["git", "ls-files"],
-    text=True
-).splitlines()
+          files = subprocess.check_output(
+              ["git", "ls-files"],
+              text=True
+          ).splitlines()
 
-code = ""
-ignore = [
-    ".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe", ".bin"
-]
-for f in files:
-    if any(f.endswith(x) for x in ignore):
-        continue
-    try:
-        with open(f, "r", encoding="utf-8") as file:
-            code += "\n\n===== FILE: " + f + " =====\n"
-            code += file.read()
-    except:
-        pass
+          code = ""
+          ignore = [
+              ".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe", ".bin"
+          ]
+          for f in files:
+              if any(f.endswith(x) for x in ignore):
+                  continue
+              try:
+                  with open(f, "r", encoding="utf-8") as file:
+                      code += "\n\n===== FILE: " + f + " =====\n"
+                      code += file.read()
+              except:
+                  pass
 
-prompt = f"""
-あなたはシニアソフトウェアエンジニアです。
-以下のGitHubリポジトリ全体をレビューしてください。
-重点項目:
-- 致命的バグ
-- C/C++の未定義動作
-- メモリリーク
-- パフォーマンス問題
-- 並列処理問題
-- 設計上の問題
-- セキュリティ問題
-- 改善案
-出力形式:
-# Critical
-問題
-# High
-問題
-# Medium
-問題
-# Low
-問題
-# Summary
-全体評価
-コード:
-{code}
-"""
+          prompt = f"""
+          あなたはシニアソフトウェアエンジニアです。
+          以下のGitHubリポジトリ全体をレビューしてください。
+          重点項目:
+          - 致命的バグ
+          - C/C++の未定義動作
+          - メモリリーク
+          - パフォーマンス問題
+          - 並列処理問題
+          - 設計上の問題
+          - セキュリティ問題
+          - 改善案
+          出力形式:
+          # Critical
+          問題
+          # High
+          問題
+          # Medium
+          問題
+          # Low
+          問題
+          # Summary
+          全体評価
+          コード:
+          {code}
+          """
 
-payload = {
-    "model": "gpt-oss-120b",
-    "messages": [
-        {"role": "system", "content": "You are an expert code reviewer."},
-        {"role": "user", "content": prompt}
-    ],
-    "max_completion_tokens": 40000,
-    "temperature": 0.2
-}
+          payload = {
+              "model": "gpt-oss-120b",
+              "messages": [
+                  {"role": "system", "content": "You are an expert code reviewer."},
+                  {"role": "user", "content": prompt}
+              ],
+              "max_completion_tokens": 40000,
+              "temperature": 0.2
+          }
 
-req = urllib.request.Request(
-    "https://api.cerebras.ai/v1/chat/completions",
-    data=json.dumps(payload).encode("utf-8"),
-    headers={
-        "Authorization": f"Bearer {os.environ['CEREBRAS_API_KEY']}",
-        "Content-Type": "application/json"
-    },
-    method="POST"
-)
+          req = urllib.request.Request(
+              "https://api.cerebras.ai/v1/chat/completions",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Authorization": "Bearer " + os.environ["CEREBRAS_API_KEY"],
+                  "Content-Type": "application/json"
+              },
+              method="POST"
+          )
 
-with urllib.request.urlopen(req, timeout=600) as resp:
-    data = json.loads(resp.read().decode("utf-8"))
+          with urllib.request.urlopen(req, timeout=600) as resp:
+              data = json.loads(resp.read().decode("utf-8"))
 
-result = data["choices"][0]["message"]["content"]
-with open("review.md", "w", encoding="utf-8") as f:
-    f.write(result)
+          result = data["choices"][0]["message"]["content"]
+          with open("review.md", "w", encoding="utf-8") as f:
+              f.write(result)
+          PY
+      - name: Run GLM-4.7 Review
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: |
+          python review.py
+      - name: Upload Review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glm47-code-review
+          path: review.md
+          retention-days: 14
