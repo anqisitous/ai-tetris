@@ -79,3 +79,17 @@ public:
     
     const std::vector<TemplateDefinition>& getAll() const { return templates; }
 };
+
+// ---- TemplateLoader - tmpl / fumenリスト / バイナリキャッシュ の読み書き ----
+// 実装は ai_templates.cpp。
+// 元々このリポジトリには宣言(プロトタイプ)が存在せず、main_sdl3.cppと
+// ai_server.cppの両方が定義のみに依存していたため、ai_templates.cppと
+// 同一の翻訳単位でコンパイルされる場合を除きリンクエラーになっていた
+// (今回のoracle対応の一環として、この既存の不備を合わせて修正した)。
+namespace TemplateLoader {
+int loadTmplFile(const std::string& path, TemplateLibrary& outLib);
+int loadFumenListFile(const std::string& path, TemplateLibrary& outLib, int searchDepth);
+bool buildTerrainCache(const std::string& fumenListPath, const std::string& outCachePath,
+                        int searchDepth);
+int loadTerrainCache(const std::string& cachePath, TemplateLibrary& outLib);
+}  // namespace TemplateLoader

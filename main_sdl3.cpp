@@ -5,10 +5,104 @@
 #include <SDL3_ttf/SDL_ttf.h>
 #include "game_engine.h"
 #include "ai_core.h"
+#include "ws_client.h"
+#include "protocol.h"
 #include <cstdio>
 #include <cmath>
 #include <random>
 #include <fstream>
+#include <optional>
+
+// ===================================================================
+// Oracleクライアント: AI側(P2、およびaiVsAi時のP1)の一手判断を
+// oracleサーバーに問い合わせるための薄いラッパー。
+//
+// 設計方針(protocol.hのコメント参照):
+//   - 盤面はAIが一手打つ(着地する)たびにBoardStateFrameとして送る。
+//   - InputEventFrameは人間側P1の生キー操作を非同期ストリームで送る。
+//     (現状oracle側は判断に使わないが、将来のneuron拡張に備えて送る)
+//   - AIActionFrameの到着は待たない。executeAI側でready判定により
+//     AI側ピースの移動確定だけを保留する(通常モードのみ。
+//     aiVsAiモードでは保留せず、直近の指示のまま進める)。
+// ===================================================================
+struct OracleClient {
+    NetWs::WsClient ws;
+    bool connected = false;
+    uint32_t nextBoardSeq = 1;
+    uint32_t nextInputSeq = 1;
+    uint32_t lastAppliedSeq = 0;  // 直近でaiActへ反映したAIActionFrameのseq
+
+    bool connect(const std::string& host, uint16_t port) {
+        connected = ws.connectTo(host, port);
+        if (connected) ws.setNonBlocking(true);
+        return connected;
+    }
+
+    // 着地時に呼ぶ。盤面全体を送信し、新しいseqを払い出して返す。
+    uint32_t sendBoardState(const PlayerState& ps) {
+        if (!connected) return 0;
+        NetProtocol::BoardStateFrame f;
+        f.seq = nextBoardSeq++;
+        for (size_t i = 0; i < NetProtocol::BoardStateFrame::BOARD_ROWS; ++i) {
+            f.boardRows[i] = ps.board[i];
+        }
+        f.curType = static_cast<uint8_t>(ps.curType);
+        f.curRot = static_cast<uint8_t>(ps.curRot);
+        f.curX = ps.curX;
+        f.curY = ps.curY;
+        for (size_t i = 0; i < NetProtocol::BoardStateFrame::NEXT_COUNT; ++i) {
+            f.nextTypes[i] = (i < ps.next.size())
+                ? static_cast<uint8_t>(ps.next[i])
+                : static_cast<uint8_t>(PType::I);
+        }
+        f.holdType = static_cast<uint8_t>(ps.hold);
+        f.canHold = ps.canHold ? 1 : 0;
+        f.combo = ps.combo;
+        f.btb = ps.btb;
+
+        uint8_t buffer[NetProtocol::BoardStateFrame::WIRE_SIZE];
+        f.toBytes(buffer);
+        ws.sendBinary(buffer, NetProtocol::BoardStateFrame::WIRE_SIZE);
+        return f.seq;
+    }
+
+    // 人間側P1の生キー操作を非同期で送る(判断には使わないが常時送り続ける)。
+    void sendInputEvent(NetProtocol::KeyCode key, uint32_t timestampMs) {
+        if (!connected) return;
+        NetProtocol::InputEventFrame f;
+        f.seq = nextInputSeq++;
+        f.keyCode = static_cast<uint8_t>(key);
+        f.timestampMs = timestampMs;
+        uint8_t buffer[NetProtocol::InputEventFrame::WIRE_SIZE];
+        f.toBytes(buffer);
+        ws.sendBinary(buffer, NetProtocol::InputEventFrame::WIRE_SIZE);
+    }
+
+    // 毎フレーム呼ぶ。届いているAIActionFrameのうち最新のものだけをaiActへ反映する。
+    // 戻り値: 何か新しい応答を反映したらtrue。
+    bool pollAndApply(AIAction& act) {
+        if (!connected) return false;
+        bool applied = false;
+        auto messages = ws.recvAllBinary();
+        for (auto& msg : messages) {
+            if (msg.size() < NetProtocol::AIActionFrame::WIRE_SIZE) continue;
+            if (msg[0] != NetProtocol::MAGIC_AI_ACTION) continue;
+            NetProtocol::AIActionFrame f = NetProtocol::AIActionFrame::fromBytes(msg.data());
+            // 古い(seqが遅れて届いた)応答は無視する。
+            if (f.seq <= lastAppliedSeq && lastAppliedSeq != 0) continue;
+            lastAppliedSeq = f.seq;
+
+            act.targetX = f.targetX;
+            act.targetRot = f.targetRot;
+            act.shouldHold = (f.shouldHold != 0);
+            act.shouldDrop = (f.shouldDrop != 0);
+            act.ready = (f.ready != 0);
+            act.holdDone = false;
+            applied = true;
+        }
+        return applied;
+    }
+};
 
 // ---- 地形テンプレートの読み込み ----
 // 起動時に以下の優先順で地形を組み込む:
@@ -153,26 +247,62 @@ int main() {
     p1.init(123);
     p2.init(456);
     
-    // aiState/aiAct は P2 用。P1がAIVsAiモードに切り替わったときは p1AiState/p1Act を使う。
-    AIState aiState;
-    AIState p1AiState;
-    TemplateLibrary templateLib;
-    loadAllTemplates(templateLib);
-    aiState.templateLib = &templateLib;
-    aiState.patternMemory = PatternMemory();
-    p1AiState.templateLib = &templateLib;
-    p1AiState.patternMemory = PatternMemory();
+    // AI(P2、およびaiVsAi時のP1)の一手判断はoracleサーバーに問い合わせる。
+    // ローカルではbeamSearchを直接呼ばない。P1用・P2用で別接続を持つ
+    // (BoardStateFrame.seqの空間を分け、応答の取り違えを避けるため)。
+    OracleClient oracleP2;
+    OracleClient oracleP1;
+    const std::string oracleHost = "127.0.0.1";
+    const uint16_t oraclePort = 8080;
+    bool oracleP2Connected = oracleP2.connect(oracleHost, oraclePort);
+    if (!oracleP2Connected) {
+        fprintf(stderr, "[Oracle] P2用サーバーへの接続に失敗しました(%s:%u)\n",
+                oracleHost.c_str(), oraclePort);
+    }
+    // P1用は aiVsAi モードに切り替えたときに初めて必要になるため遅延接続でもよいが、
+    // 単一サーバーは1接続限定(ws_server.hの制約)なので、P1側を使う場合は
+    // 別ポートの2つ目のoracleサーバーインスタンスが必要になる。
+    // ここでは同一ホストの別ポート(8081)を想定する。
+    const uint16_t oracleP1Port = 8081;
+    bool oracleP1Connected = false;  // aiVsAiへの切り替え時に遅延接続する
     
     double softDropSpeed = 0.03;
     double aiDasDelay = 0.10, aiArrDelay = 0.02, aiThinkInterval = 0.10;
     bool paused = false, aiVsAi = false;
     bool quit = false;
     Uint64 last = SDL_GetTicks();
+    Uint64 sessionStart = last;
     
     bool leftHeld = false, rightHeld = false;
     AIAction aiAct;    // P2の行動
     AIAction p1Act;    // P1がAI操作のときの行動
     std::mt19937 garbageRng(2024);
+
+    // 着地検出用: 直前フレームでのcurTypeを保持し、変化したら着地とみなす。
+    // (lockAndSpawnは必ずps.curType = ps.popNext()を行うため、curTypeの変化は
+    //  着地が発生したことの確実な検出条件になる。ライン消去の有無やscoreの
+    //  変化に依存しないため、無得点の着地も取りこぼさない。)
+    PType p2PrevCurType = p2.curType;
+    PType p1PrevCurType = p1.curType;
+
+    // ゲーム開始時点のP2盤面(最初のミノ)をoracleへ一度送っておく。
+    // 着地イベント(curTypeの変化)は次のミノに切り替わった時にしか発火しないため、
+    // これを送らないと最初のミノについてoracleが何も知らないまま放置される。
+    if (oracleP2Connected) oracleP2.sendBoardState(p2);
+
+    // SDLキー -> NetProtocol::KeyCode 変換。対応しないキーはnulloptを返す。
+    auto toKeyCode = [](SDL_Keycode key, bool isDown) -> std::optional<NetProtocol::KeyCode> {
+        switch (key) {
+            case SDLK_LEFT:  return isDown ? NetProtocol::KeyCode::LeftDown  : NetProtocol::KeyCode::LeftUp;
+            case SDLK_RIGHT: return isDown ? NetProtocol::KeyCode::RightDown : NetProtocol::KeyCode::RightUp;
+            case SDLK_X:     return isDown ? std::optional(NetProtocol::KeyCode::RotateCW)  : std::nullopt;
+            case SDLK_Z:     return isDown ? std::optional(NetProtocol::KeyCode::RotateCCW) : std::nullopt;
+            case SDLK_UP:    return isDown ? std::optional(NetProtocol::KeyCode::HardDrop)   : std::nullopt;
+            case SDLK_C:     return isDown ? std::optional(NetProtocol::KeyCode::Hold)       : std::nullopt;
+            case SDLK_DOWN:  return isDown ? NetProtocol::KeyCode::SoftDropOn : NetProtocol::KeyCode::SoftDropOff;
+            default: return std::nullopt;
+        }
+    };
     
     while (!quit) {
         Uint64 now = SDL_GetTicks();
@@ -184,14 +314,33 @@ int main() {
             if (e.type == SDL_EVENT_QUIT) quit = true;
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 switch (e.key.key) {
-                    case SDLK_T: aiVsAi = !aiVsAi; leftHeld = rightHeld = false; p1.softDrop = false;
-                        p1.pendingSpawnRotDelta = 0; p1.pendingSpawnXDelta = 0; break;
+                    case SDLK_T:
+                        aiVsAi = !aiVsAi; leftHeld = rightHeld = false; p1.softDrop = false;
+                        p1.pendingSpawnRotDelta = 0; p1.pendingSpawnXDelta = 0;
+                        if (aiVsAi) {
+                            if (!oracleP1Connected) {
+                                oracleP1Connected = oracleP1.connect(oracleHost, oracleP1Port);
+                                if (!oracleP1Connected) {
+                                    fprintf(stderr, "[Oracle] P1用サーバーへの接続に失敗しました(%s:%u)\n",
+                                            oracleHost.c_str(), oracleP1Port);
+                                }
+                            }
+                            // 切り替え直後の現在のミノをoracleへ伝えておく
+                            // (次の着地までoracleが古いか空の情報しか持たないのを防ぐ)
+                            if (oracleP1Connected) {
+                                oracleP1.sendBoardState(p1);
+                                p1Act.ready = false;
+                            }
+                        }
+                        break;
                     case SDLK_P: paused = !paused; break;
                     case SDLK_R:
                         p1.init(123); p2.init(456);
-                        aiState = AIState(); aiState.templateLib = &templateLib;
-                        p1AiState = AIState(); p1AiState.templateLib = &templateLib;
                         aiAct = AIAction{}; p1Act = AIAction{};
+                        p2PrevCurType = p2.curType;
+                        p1PrevCurType = p1.curType;
+                        if (oracleP2Connected) oracleP2.sendBoardState(p2);
+                        if (aiVsAi && oracleP1Connected) oracleP1.sendBoardState(p1);
                         break;
                     case SDLK_ESCAPE: quit = true; break;
                     case SDLK_LEFTBRACKET:
@@ -273,6 +422,17 @@ int main() {
                     if (e.key.key == SDLK_DOWN) p1.softDrop = false;
                 }
             }
+
+            // ---- 人間側P1の生キー操作をoracleへ非同期ストリームで送る ----
+            // (aiVsAi中はP1もAIが操作するため人間の入力ではなくなり、送らない)
+            if (!aiVsAi && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP)
+                && !e.key.repeat) {
+                auto kc = toKeyCode(e.key.key, e.type == SDL_EVENT_KEY_DOWN);
+                if (kc.has_value()) {
+                    uint32_t ts = static_cast<uint32_t>(SDL_GetTicks() - sessionStart);
+                    oracleP2.sendInputEvent(*kc, ts);
+                }
+            }
         }
         
         if (!paused) {
@@ -288,29 +448,51 @@ int main() {
             int p1ScoreBefore = p1.score;
             int p2ScoreBefore = p2.score;
 
+            // ---- oracleからの最新応答をaiActへ反映 ----
+            // (応答を待たずに毎フレーム進む。届いていればreadyの値ごと反映するだけ)
+            oracleP2.pollAndApply(aiAct);
+            if (aiVsAi) oracleP1.pollAndApply(p1Act);
+
             if (aiVsAi && !p1.gameOver) {
-                p1AiState.thinkTimer += dt;
-                if (!p1Act.ready && p1AiState.thinkTimer >= aiThinkInterval) {
-                    p1AiState.thinkTimer = 0;
-                    BeamNode node = beamSearch(p1AiState, p1, 20, 3);
-                    p1Act = makeActionFromBeam(node);
-                }
+                // AI vs AiモードではP1側もoracleが判断するが、readyを待たずに
+                // 直近の指示のままexecuteAIを進める(未着のときはact.ready=falseの
+                // ままなのでexecuteAIは何もせず、次に応答が届いた時点で動き出す。
+                // これは「待つ」のではなく、単に「まだ指示がない」状態と同じ扱い)。
                 executeAI(p1, p1Act, dt, aiDasDelay, aiArrDelay);
             }
 
             if (!p2.gameOver) {
-                aiState.thinkTimer += dt;
-                if (!aiAct.ready && aiState.thinkTimer >= aiThinkInterval) {
-                    aiState.thinkTimer = 0;
-                    BeamNode node = beamSearch(aiState, p2, 20, 3);
-                    aiAct = makeActionFromBeam(node);
-                }
+                // 通常モード(Human vs AI)・AI vs AiモードともP2は常にoracle判断。
+                // 通常モードではready==falseの間、executeAIが何もしないことで
+                // 「AI側ピースの移動確定だけを保留する」待ち合わせが実現される。
                 executeAI(p2, aiAct, dt, aiDasDelay, aiArrDelay);
             }
 
             // 重力落下（人間操作時のP1にも、AI操作中の両者にも共通して働く）
             if (!p1.gameOver) stepPlayer(p1, dt, softDropSpeed);
             if (!p2.gameOver) stepPlayer(p2, dt, softDropSpeed);
+
+            // ---- 着地検出とBoardStateFrame送信 ----
+            // lockAndSpawnは必ずcurTypeを更新するため、前フレームからの変化を
+            // 「一手打たれた(着地した)」の確実な検出条件として使う。
+            // 検出したらoracleへ新しい盤面を送り、ready状態をリセットする
+            // (次の着地までの間、古いreadyのまま誤って動き続けないようにする)。
+            if (!aiVsAi && p2.curType != p2PrevCurType) {
+                oracleP2.sendBoardState(p2);
+                aiAct.ready = false;
+            }
+            if (aiVsAi) {
+                if (p2.curType != p2PrevCurType) {
+                    oracleP2.sendBoardState(p2);
+                    aiAct.ready = false;
+                }
+                if (p1.curType != p1PrevCurType) {
+                    oracleP1.sendBoardState(p1);
+                    p1Act.ready = false;
+                }
+            }
+            p2PrevCurType = p2.curType;
+            p1PrevCurType = p1.curType;
 
             // スポーン位置での衝突をゲームオーバーとして扱う
             // game_engine.cpp 側にこの判定が無いため、ここで補完する
