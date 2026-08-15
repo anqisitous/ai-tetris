@@ -12,27 +12,16 @@ const SDL_Color COLORS[7] = {
     {255,0,0}, {0,0,255}, {255,165,0}
 };
 
-// ---- Forme ----
-// rows[r] は上から r 番目の段の列マスク (bit0 = ミノの左端の列)。
-// height はそのミノが占める段数。空の段は含めない。
 const MinoShape SHAPES[7][4] = {
-    // I
     { {{0xF,0,0,0},1}, {{0x4,0x4,0x4,0x4},4}, {{0xF,0,0,0},1}, {{0x2,0x2,0x2,0x2},4} },
-    // O
     { {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2}, {{0x6,0x6,0,0},2} },
-    // T
     { {{0x2,0x7,0,0},2}, {{0x2,0x6,0x2,0},3}, {{0x7,0x2,0,0},2}, {{0x2,0x3,0x2,0},3} },
-    // S
     { {{0x6,0x3,0,0},2}, {{0x2,0x6,0x4,0},3}, {{0x6,0x3,0,0},2}, {{0x1,0x3,0x2,0},3} },
-    // Z
     { {{0x3,0x6,0,0},2}, {{0x4,0x6,0x2,0},3}, {{0x3,0x6,0,0},2}, {{0x2,0x3,0x1,0},3} },
-    // J
     { {{0x1,0x7,0,0},2}, {{0x6,0x2,0x2,0},3}, {{0x7,0x4,0,0},2}, {{0x2,0x2,0x3,0},3} },
-    // L
     { {{0x4,0x7,0,0},2}, {{0x2,0x2,0x6,0},3}, {{0x7,0x1,0,0},2}, {{0x3,0x2,0x2,0},3} }
 };
 
-// ---- Kick tables (semplificate) ----
 const int8_t KICK_I[8][5][2] = {
     {{0,0},{-1,0},{2,0},{-1,0},{2,0}},
     {{0,0},{1,0},{-2,0},{1,0},{-2,0}},
@@ -55,8 +44,6 @@ const int8_t KICK_OTHER[8][5][2] = {
     {{0,0},{1,0},{1,1},{0,-2},{1,-2}}
 };
 
-// ---- Maschera di una riga della mino traslata di x ----
-// 盤外にはみ出す場合は false を返す (占有マスが盤面から消えないようにする)
 bool ShiftRowMask(uint16_t rowMask, int x, uint16_t& out) {
     if (rowMask == 0) { out = 0; return true; }
     if (x >= BOARD_W || x <= -4) return false;
@@ -66,13 +53,12 @@ bool ShiftRowMask(uint16_t rowMask, int x, uint16_t& out) {
         out = static_cast<uint16_t>(shifted);
     } else {
         int shift = -x;
-        if (rowMask & ((1u << shift) - 1)) return false;  // 左にはみ出す
+        if (rowMask & ((1u << shift) - 1)) return false;
         out = static_cast<uint16_t>(rowMask >> shift);
     }
     return true;
 }
 
-// ---- Collisione ----
 bool IsCollision(const BoardBits& board, const MinoShape& shape, int x, int y) {
     for (int r = 0; r < shape.height; ++r) {
         uint16_t mask = 0;
@@ -86,7 +72,6 @@ bool IsCollision(const BoardBits& board, const MinoShape& shape, int x, int y) {
     return false;
 }
 
-// ---- Hard Drop Y ----
 int HardDropY(const BoardBits& board, const MinoShape& shape, int x) {
     if (IsCollision(board, shape, x, 0)) return -1;
     int y = 0;
@@ -97,7 +82,6 @@ int HardDropY(const BoardBits& board, const MinoShape& shape, int x) {
     return y;
 }
 
-// ---- Clear Lines ----
 int ClearLines(BoardBits& board) {
     int cleared = 0;
     for (int r = BOARD_H - 1; r >= 0; ) {
@@ -110,7 +94,6 @@ int ClearLines(BoardBits& board) {
     return cleared;
 }
 
-// ---- Danno ----
 int CalculateDamage(int linesCleared, bool tSpin, bool btb, int combo, bool perfectClear) {
     if (perfectClear) return 10;
     int d = 0;
@@ -132,7 +115,6 @@ int CalculateDamage(int linesCleared, bool tSpin, bool btb, int combo, bool perf
     return d;
 }
 
-// ---- Garbage (10% foro spostato) ----
 void AddGarbage(BoardBits& board, int lines, std::mt19937& rng) {
     if (lines <= 0) return;
     std::uniform_int_distribution<int> colDist(0, 9);
@@ -153,7 +135,156 @@ void AddGarbage(BoardBits& board, int lines, std::mt19937& rng) {
     }
 }
 
-// ---- Enumerazione piazzamenti (BFS con soft drop e kick sequenziale) ----
+// ---- Garbage (新方式: baseCol + numMinosPlaced による区間オフセット生成) ----
+void AddGarbageWithOffset(BoardBits& board, int lines, int baseCol,
+                           int numMinosPlaced, std::mt19937& rng,
+                           float successProb) {
+    if (lines <= 0) return;
+
+    std::uniform_real_distribution<double> trialDist(0.0, 1.0);
+    std::uniform_int_distribution<int> offsetDist(0, 9);
+
+    struct Mark { long long rawRow; int cumOffset; };
+    std::vector<Mark> marks;
+    marks.reserve(static_cast<size_t>(numMinosPlaced));
+
+    long long rawRow = 0;
+    int cumOffset = 0;
+    int successes = 0;
+
+    while (successes < numMinosPlaced) {
+        bool hit = trialDist(rng) < static_cast<double>(successProb);
+        if (hit) {
+            int add = offsetDist(rng);
+            cumOffset = (cumOffset + add) % 10;
+            marks.push_back({rawRow, cumOffset});
+            ++successes;
+        }
+        ++rawRow;
+    }
+
+    struct ResolvedMark { int row; int cumOffset; };
+    std::vector<ResolvedMark> resolved;
+    resolved.reserve(marks.size());
+    for (auto& m : marks) {
+        int row = static_cast<int>(m.rawRow % lines);
+        resolved.push_back({row, m.cumOffset});
+    }
+
+    std::stable_sort(resolved.begin(), resolved.end(),
+                      [](const ResolvedMark& a, const ResolvedMark& b) {
+                          return a.row < b.row;
+                      });
+    resolved.push_back({lines, cumOffset});
+
+    std::vector<int> rowOffset(lines, 0);
+    {
+        int prevRow = 0;
+        int prevOffset = 0;
+        for (size_t k = 0; k < resolved.size(); ++k) {
+            int boundary = resolved[k].row;
+            for (int r = prevRow; r < boundary && r < lines; ++r) {
+                rowOffset[r] = prevOffset;
+            }
+            prevRow = boundary;
+            prevOffset = resolved[k].cumOffset;
+        }
+    }
+
+    for (int i = 0; i < lines; ++i) {
+        int actualHole = ((baseCol + rowOffset[i]) % 10 + 10) % 10;
+
+        for (int r = BOARD_BUFFER - 1; r > 0; --r) board[r] = board[r - 1];
+        board[0] = 0;
+
+        uint16_t garbageRow = 0x3FF ^ (1 << actualHole);
+        for (int r = BOARD_H - 1; r >= 0; --r) {
+            if (board[r] == 0) { board[r] = garbageRow; break; }
+        }
+    }
+}
+
+// ---- 攻撃の発生 (相殺込み・一回きり) ----
+// 呼ばれた瞬間のincomingAttacksの残高だけを対象に、その場で相殺する。
+// 継続的な監視は行わない: この呼び出しが終われば相殺は完了しており、
+// 以後(自分がまだ次の攻撃を出していない間に)incomingAttacksへ新たに
+// 積まれる攻撃は、今回の相殺には一切関与せずディレイなしでそのまま着弾する。
+void fireAttack(PlayerState& attacker, int damage, double gameTimeNow,
+                 double travelTime, bool isPerfectClear, std::mt19937& rng) {
+    if (damage <= 0) return;
+
+    // 1. 相殺: incomingAttacks を古い順(fireTimeが早い順=キュー先頭から)に
+    //    今回のdamageで食っていく。
+    int remainingDamage = damage;
+    std::vector<PendingAttack> stillIncoming;
+    stillIncoming.reserve(attacker.incomingAttacks.size());
+
+    for (auto& inc : attacker.incomingAttacks) {
+        if (remainingDamage <= 0) {
+            stillIncoming.push_back(inc);
+            continue;
+        }
+        if (inc.damage <= remainingDamage) {
+            // このincoming攻撃は完全に相殺される。attacker側のdamageを消費する。
+            remainingDamage -= inc.damage;
+            // inc自体はstillIncomingへ入れない(相殺で消える)。
+        } else {
+            // 部分的にしか相殺できない。残りをディレイなしで即座に受ける対象にする。
+            inc.damage -= remainingDamage;
+            remainingDamage = 0;
+            // ディレイなしで即座に盤面へ反映し、incomingAttacksからは除去する。
+            if (!attacker.gameOver) {
+                AddGarbageWithOffset(attacker.board, inc.damage, inc.baseCol,
+                                      inc.numMinosPlaced, rng);
+            }
+        }
+    }
+    attacker.incomingAttacks = std::move(stillIncoming);
+
+    // 2. 相殺後にdamage側が余った分だけ、ディレイありで相手へ送る攻撃として確定する。
+    if (remainingDamage <= 0) return;
+
+    std::uniform_int_distribution<int> colDist(0, 9);
+    PendingAttack atk;
+    atk.damage = remainingDamage;
+    atk.fireTime = gameTimeNow;
+    atk.travelTime = isPerfectClear ? 0.0 : travelTime;
+    atk.baseCol = colDist(rng);
+    atk.numMinosPlaced = 0;
+    attacker.outgoingAttacks.push_back(atk);
+}
+
+// ---- 受け主がミノを1つ置いたときに呼ぶ ----
+void notifyMinoPlaced(PlayerState& receiver) {
+    for (auto& atk : receiver.incomingAttacks) {
+        atk.numMinosPlaced++;
+    }
+}
+
+// ---- 着弾判定を進める ----
+// fireTime + travelTime を自分のローカルgameTimeNowと比較するだけで、
+// 送り主側の処理タイミングには一切依存しない。
+void advanceIncomingAttacks(PlayerState& receiver, double gameTimeNow, std::mt19937& rng) {
+    if (receiver.incomingAttacks.empty()) return;
+
+    std::vector<PendingAttack> stillWaiting;
+    stillWaiting.reserve(receiver.incomingAttacks.size());
+
+    for (auto& atk : receiver.incomingAttacks) {
+        double arrivalTime = atk.fireTime + atk.travelTime;
+        if (gameTimeNow < arrivalTime) {
+            stillWaiting.push_back(atk);
+            continue;
+        }
+        if (!receiver.gameOver) {
+            AddGarbageWithOffset(receiver.board, atk.damage, atk.baseCol,
+                                  atk.numMinosPlaced, rng);
+        }
+    }
+
+    receiver.incomingAttacks = std::move(stillWaiting);
+}
+
 std::vector<PlacementResult> EnumerateAllPlacements(
     const BoardBits& board, PType pieceType,
     bool canHold, PType holdType, int btb, int combo)
@@ -166,7 +297,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
         for (int rot = 0; rot < 4; ++rot) {
             const MinoShape& shape = SHAPES[(int)ptype][rot];
             
-            // Lock candidates
             std::vector<PlacementState> lockCandidates;
             for (int x = -2; x < BOARD_W + 2; ++x) {
                 if (IsCollision(board, shape, x, 0)) continue;
@@ -174,7 +304,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                 if (y >= 0) lockCandidates.push_back({x, y, rot});
             }
             
-            // BFS da spawn
             int spawnX = 3, spawnY = 0;
             if (IsCollision(board, shape, spawnX, spawnY)) continue;
             
@@ -189,7 +318,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                 PlacementState cur = q.front(); q.pop();
                 int curDist = dist[cur];
                 
-                // Soft drop
                 if (!IsCollision(board, shape, cur.x, cur.y + 1)) {
                     PlacementState nxt = {cur.x, cur.y + 1, cur.rot};
                     if (!reachable.count(nxt)) {
@@ -198,7 +326,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                         q.push(nxt);
                     }
                 }
-                // Sinistra
                 if (!IsCollision(board, shape, cur.x - 1, cur.y)) {
                     PlacementState nxt = {cur.x - 1, cur.y, cur.rot};
                     if (!reachable.count(nxt)) {
@@ -207,7 +334,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                         q.push(nxt);
                     }
                 }
-                // Destra
                 if (!IsCollision(board, shape, cur.x + 1, cur.y)) {
                     PlacementState nxt = {cur.x + 1, cur.y, cur.rot};
                     if (!reachable.count(nxt)) {
@@ -216,7 +342,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                         q.push(nxt);
                     }
                 }
-                // Rotazioni con kick sequenziale
                 for (int dir : {1, 3}) {
                     int newRot = (cur.rot + dir) % 4;
                     const MinoShape& newShape = SHAPES[(int)ptype][newRot];
@@ -252,14 +377,13 @@ std::vector<PlacementResult> EnumerateAllPlacements(
                                     dist[nxt] = curDist + 1;
                                     q.push(nxt);
                                 }
-                                break;  // Kick sequenziale!
+                                break;
                             }
                         }
                     }
                 }
             }
             
-            // Genera risultati per lock candidates raggiungibili
             for (auto& lock : lockCandidates) {
                 if (!reachable.count(lock)) continue;
                 
@@ -283,7 +407,6 @@ std::vector<PlacementResult> EnumerateAllPlacements(
     return results;
 }
 
-// ---- Inizializzazione giocatore ----
 void PlayerState::init(int seed) {
     std::mt19937 rng(seed);
     board.fill(0);
@@ -336,7 +459,6 @@ PType PlayerState::popNext() {
     return t;
 }
 
-// ---- Step giocatore ----
 void stepPlayer(PlayerState& ps, double dt, double softDropSpeed) {
     if (ps.gameOver) return;
     double normalInterval = std::max(0.05, 0.6 - ps.level * 0.04);
@@ -360,23 +482,17 @@ void hardDropPlayer(PlayerState& ps) {
     lockAndSpawn(ps);
 }
 
-// ---- スポーン処理 (先行入力 + 21段目救済ルール) ----
 void spawnPiece(PlayerState& ps) {
-    // 1. 先行入力を適用した基準位置を組み立てる
     int rot = ((0 + ps.pendingSpawnRotDelta) % 4 + 4) % 4;
     int x = 3 + ps.pendingSpawnXDelta;
     int y = 0;
 
-    // 適用し終えたら先行入力バッファはクリアする
-    // (「直近の」先行入力のみを使うという仕様。次のミノには持ち越さない)
     ps.pendingSpawnRotDelta = 0;
     ps.pendingSpawnXDelta = 0;
 
     const MinoShape& shape = SHAPES[(int)ps.curType][rot];
 
-    // 2. その位置(先行入力適用後)で衝突するか判定
     if (IsCollision(ps.board, shape, x, y)) {
-        // 3. 衝突するなら21段目(y=-1)から出現させる
         y = -1;
         ps.lastSpawnMode = SpawnMode::Row21Escape;
     } else {

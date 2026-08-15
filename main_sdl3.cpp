@@ -13,24 +13,12 @@
 #include <fstream>
 #include <optional>
 
-// ===================================================================
-// Oracleクライアント: AI側(P2、およびaiVsAi時のP1)の一手判断を
-// oracleサーバーに問い合わせるための薄いラッパー。
-//
-// 設計方針(protocol.hのコメント参照):
-//   - 盤面はAIが一手打つ(着地する)たびにBoardStateFrameとして送る。
-//   - InputEventFrameは人間側P1の生キー操作を非同期ストリームで送る。
-//     (現状oracle側は判断に使わないが、将来のneuron拡張に備えて送る)
-//   - AIActionFrameの到着は待たない。executeAI側でready判定により
-//     AI側ピースの移動確定だけを保留する(通常モードのみ。
-//     aiVsAiモードでは保留せず、直近の指示のまま進める)。
-// ===================================================================
 struct OracleClient {
     NetWs::WsClient ws;
     bool connected = false;
     uint32_t nextBoardSeq = 1;
     uint32_t nextInputSeq = 1;
-    uint32_t lastAppliedSeq = 0;  // 直近でaiActへ反映したAIActionFrameのseq
+    uint32_t lastAppliedSeq = 0;
 
     bool connect(const std::string& host, uint16_t port) {
         connected = ws.connectTo(host, port);
@@ -38,7 +26,6 @@ struct OracleClient {
         return connected;
     }
 
-    // 着地時に呼ぶ。盤面全体を送信し、新しいseqを払い出して返す。
     uint32_t sendBoardState(const PlayerState& ps) {
         if (!connected) return 0;
         NetProtocol::BoardStateFrame f;
@@ -66,7 +53,6 @@ struct OracleClient {
         return f.seq;
     }
 
-    // 人間側P1の生キー操作を非同期で送る(判断には使わないが常時送り続ける)。
     void sendInputEvent(NetProtocol::KeyCode key, uint32_t timestampMs) {
         if (!connected) return;
         NetProtocol::InputEventFrame f;
@@ -78,8 +64,6 @@ struct OracleClient {
         ws.sendBinary(buffer, NetProtocol::InputEventFrame::WIRE_SIZE);
     }
 
-    // 毎フレーム呼ぶ。届いているAIActionFrameのうち最新のものだけをaiActへ反映する。
-    // 戻り値: 何か新しい応答を反映したらtrue。
     bool pollAndApply(AIAction& act) {
         if (!connected) return false;
         bool applied = false;
@@ -88,7 +72,6 @@ struct OracleClient {
             if (msg.size() < NetProtocol::AIActionFrame::WIRE_SIZE) continue;
             if (msg[0] != NetProtocol::MAGIC_AI_ACTION) continue;
             NetProtocol::AIActionFrame f = NetProtocol::AIActionFrame::fromBytes(msg.data());
-            // 古い(seqが遅れて届いた)応答は無視する。
             if (f.seq <= lastAppliedSeq && lastAppliedSeq != 0) continue;
             lastAppliedSeq = f.seq;
 
@@ -104,14 +87,6 @@ struct OracleClient {
     }
 };
 
-// ---- 地形テンプレートの読み込み ----
-// 起動時に以下の優先順で地形を組み込む:
-//   1. terrain_cache.dat (バイナリキャッシュ) があればそれを最優先で高速読込
-//   2. fumen_list.txt (地形ID + fumen文字列のリスト) があれば読み込み、
-//      同時にバイナリキャッシュを生成して次回以降に備える
-//   3. templates.tmpl (手書き地形 + fumen埋め込み両対応の定義ファイル)
-// これらは同じTemplateLibraryに統合され、机械的に(探索なしで)先頭から順に
-// マッチングが試みられる。
 void loadAllTemplates(TemplateLibrary& lib) {
     const char* cachePath = "terrain_cache.dat";
     const char* fumenListPath = "fumen_list.txt";
@@ -121,7 +96,6 @@ void loadAllTemplates(TemplateLibrary& lib) {
     if (loadedFromCache > 0) {
         printf("[templates] terrain_cache.dat から %d 件の地形を読み込みました\n", loadedFromCache);
     } else {
-        // キャッシュが無い/空の場合はfumenリストから読み込み、キャッシュを新規作成する
         std::ifstream check(fumenListPath);
         if (check.is_open()) {
             check.close();
@@ -136,7 +110,6 @@ void loadAllTemplates(TemplateLibrary& lib) {
         }
     }
 
-    // 手書きテンプレート(fumen埋め込み含む)は常にtmplファイルから追加で読み込む
     std::ifstream tmplCheck(tmplPath);
     if (tmplCheck.is_open()) {
         tmplCheck.close();
@@ -150,6 +123,40 @@ SDL_Window* win = nullptr;
 SDL_Renderer* ren = nullptr;
 TTF_Font* font = nullptr;
 
+// ---- 盤面テクスチャキャッシュ (静的レイヤー) ----
+// 盤面(固定ブロック)は変化があったときだけこのテクスチャへ再描画し、
+// 変化していないフレームはテクスチャをそのままコピーするだけにする。
+// 落下中ピースなどの動的レイヤーはこのキャッシュの外で毎フレーム描く。
+struct BoardRenderCache {
+    SDL_Texture* texture = nullptr;
+    BoardBits lastDrawnBoard{};
+    bool hasDrawnOnce = false;
+
+    void ensureTexture(SDL_Renderer* renderer, int texW, int texH) {
+        if (texture) return;
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                     SDL_TEXTUREACCESS_TARGET, texW, texH);
+        if (texture) SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    }
+
+    bool isUpToDate(const BoardBits& current) const {
+        if (!hasDrawnOnce) return false;
+        return lastDrawnBoard == current;
+    }
+
+    void markDrawn(const BoardBits& current) {
+        lastDrawnBoard = current;
+        hasDrawnOnce = true;
+    }
+
+    void destroy() {
+        if (texture) { SDL_DestroyTexture(texture); texture = nullptr; }
+    }
+};
+
+BoardRenderCache p1BoardCache;
+BoardRenderCache p2BoardCache;
+
 bool initSDL() {
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
     if (!TTF_Init()) return false;
@@ -160,6 +167,12 @@ bool initSDL() {
     const char* fonts[] = {"arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", nullptr};
     for (int i = 0; fonts[i]; ++i)
         if ((font = TTF_OpenFont(fonts[i], 18))) break;
+
+    const int boardTexW = BOARD_W * CELL_SZ;
+    const int boardTexH = BOARD_H * CELL_SZ;
+    p1BoardCache.ensureTexture(ren, boardTexW, boardTexH);
+    p2BoardCache.ensureTexture(ren, boardTexW, boardTexH);
+
     return true;
 }
 
@@ -169,19 +182,46 @@ void drawRect(int x, int y, int w, int h, SDL_Color c) {
     SDL_RenderFillRect(ren, &r);
 }
 
-void drawBoard(const BoardBits& b, int ox, int oy) {
+// ---- 静的レイヤー: 盤面(固定ブロック)だけをテクスチャへ描く ----
+// isUpToDateがfalseのとき(=盤面が前回描画時から変化しているとき)だけ呼ばれる。
+void drawBoardToTexture(SDL_Renderer* renderer, SDL_Texture* target, const BoardBits& b) {
+    SDL_Texture* prevTarget = SDL_GetRenderTarget(renderer);
+    SDL_SetRenderTarget(renderer, target);
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
     for (int r = 0; r < BOARD_H; ++r) {
         for (int c = 0; c < BOARD_W; ++c) {
-            SDL_Color col = {40,40,40,255};
+            SDL_Color col = {40, 40, 40, 255};
             if (b[r] & (1 << c)) {
-                col = {128,128,128,255};
+                col = {128, 128, 128, 255};
                 for (int t = 0; t < 7; ++t) {
                     if (b[r] & (1 << c)) { col = COLORS[t]; break; }
                 }
             }
-            drawRect(ox + c * CELL_SZ, oy + r * CELL_SZ, CELL_SZ - 1, CELL_SZ - 1, col);
+            SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 255);
+            SDL_FRect rect{(float)(c * CELL_SZ), (float)(r * CELL_SZ),
+                            (float)(CELL_SZ - 1), (float)(CELL_SZ - 1)};
+            SDL_RenderFillRect(renderer, &rect);
         }
     }
+
+    SDL_SetRenderTarget(renderer, prevTarget);
+}
+
+// ---- 盤面を描画する。前回描画時から変化がなければテクスチャをコピーするだけ。----
+// ロジックが進んでいないフレームでは drawBoardToTexture は一切呼ばれない。
+void drawBoardCached(BoardRenderCache& cache, const BoardBits& b, int ox, int oy) {
+    if (!cache.isUpToDate(b)) {
+        drawBoardToTexture(ren, cache.texture, b);
+        cache.markDrawn(b);
+    }
+    SDL_FRect dst{(float)ox, (float)oy,
+                   (float)(BOARD_W * CELL_SZ), (float)(BOARD_H * CELL_SZ)};
+    SDL_RenderTexture(ren, cache.texture, nullptr, &dst);
 }
 
 void drawPiece(const PlayerState& ps, int ox, int oy) {
@@ -218,11 +258,11 @@ void renderGame(PlayerState& p1, PlayerState& p2, double softSpeed,
     SDL_RenderClear(ren);
     
     drawText("P1", 10, 10);
-    drawBoard(p1.board, 10, 40);
+    drawBoardCached(p1BoardCache, p1.board, 10, 40);
     if (!p1.gameOver) drawPiece(p1, 10, 40);
     
     drawText("P2 (AI)", 460, 10);
-    drawBoard(p2.board, 460, 40);
+    drawBoardCached(p2BoardCache, p2.board, 460, 40);
     if (!p2.gameOver) drawPiece(p2, 460, 40);
     
     int ty = 650;
@@ -247,9 +287,6 @@ int main() {
     p1.init(123);
     p2.init(456);
     
-    // AI(P2、およびaiVsAi時のP1)の一手判断はoracleサーバーに問い合わせる。
-    // ローカルではbeamSearchを直接呼ばない。P1用・P2用で別接続を持つ
-    // (BoardStateFrame.seqの空間を分け、応答の取り違えを避けるため)。
     OracleClient oracleP2;
     OracleClient oracleP1;
     const std::string oracleHost = "127.0.0.1";
@@ -259,12 +296,8 @@ int main() {
         fprintf(stderr, "[Oracle] P2用サーバーへの接続に失敗しました(%s:%u)\n",
                 oracleHost.c_str(), oraclePort);
     }
-    // P1用は aiVsAi モードに切り替えたときに初めて必要になるため遅延接続でもよいが、
-    // 単一サーバーは1接続限定(ws_server.hの制約)なので、P1側を使う場合は
-    // 別ポートの2つ目のoracleサーバーインスタンスが必要になる。
-    // ここでは同一ホストの別ポート(8081)を想定する。
     const uint16_t oracleP1Port = 8081;
-    bool oracleP1Connected = false;  // aiVsAiへの切り替え時に遅延接続する
+    bool oracleP1Connected = false;
     
     double softDropSpeed = 0.03;
     double aiDasDelay = 0.10, aiArrDelay = 0.02, aiThinkInterval = 0.10;
@@ -274,23 +307,21 @@ int main() {
     Uint64 sessionStart = last;
     
     bool leftHeld = false, rightHeld = false;
-    AIAction aiAct;    // P2の行動
-    AIAction p1Act;    // P1がAI操作のときの行動
+    AIAction aiAct;
+    AIAction p1Act;
     std::mt19937 garbageRng(2024);
+    // セッション基準の絶対時計。P1/P2どちらの処理よりも前に、フレーム冒頭で
+    // 一度だけ加算する。攻撃の着弾判定(fireTime+travelTimeとの比較)は
+    // すべてこの時計を基準にするため、送り主側の処理速度に一切依存しない。
+    double gameTimeNow = 0.0;
+    // 攻撃発生から着弾までの標準所要時間(秒)。全消しの場合はfireAttack内部で0に上書きされる。
+    const double kAttackTravelTime = 0.5;
 
-    // 着地検出用: 直前フレームでのcurTypeを保持し、変化したら着地とみなす。
-    // (lockAndSpawnは必ずps.curType = ps.popNext()を行うため、curTypeの変化は
-    //  着地が発生したことの確実な検出条件になる。ライン消去の有無やscoreの
-    //  変化に依存しないため、無得点の着地も取りこぼさない。)
     PType p2PrevCurType = p2.curType;
     PType p1PrevCurType = p1.curType;
 
-    // ゲーム開始時点のP2盤面(最初のミノ)をoracleへ一度送っておく。
-    // 着地イベント(curTypeの変化)は次のミノに切り替わった時にしか発火しないため、
-    // これを送らないと最初のミノについてoracleが何も知らないまま放置される。
     if (oracleP2Connected) oracleP2.sendBoardState(p2);
 
-    // SDLキー -> NetProtocol::KeyCode 変換。対応しないキーはnulloptを返す。
     auto toKeyCode = [](SDL_Keycode key, bool isDown) -> std::optional<NetProtocol::KeyCode> {
         switch (key) {
             case SDLK_LEFT:  return isDown ? NetProtocol::KeyCode::LeftDown  : NetProtocol::KeyCode::LeftUp;
@@ -308,6 +339,7 @@ int main() {
         Uint64 now = SDL_GetTicks();
         double dt = (now - last) / 1000.0;
         last = now;
+        gameTimeNow += dt;
         
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -325,8 +357,6 @@ int main() {
                                             oracleHost.c_str(), oracleP1Port);
                                 }
                             }
-                            // 切り替え直後の現在のミノをoracleへ伝えておく
-                            // (次の着地までoracleが古いか空の情報しか持たないのを防ぐ)
                             if (oracleP1Connected) {
                                 oracleP1.sendBoardState(p1);
                                 p1Act.ready = false;
@@ -363,7 +393,6 @@ int main() {
                 if (!paused && !aiVsAi && !p1.gameOver) {
                     switch (e.key.key) {
                         case SDLK_Z: {
-                            // 現在のミノへその場で反映(従来通り。キーリピートでは反映しない)
                             if (!e.key.repeat) {
                                 const MinoShape& s = SHAPES[(int)p1.curType][(p1.curRot + 3) % 4];
                                 if (!IsCollision(p1.board, s, p1.curX, p1.curY)) p1.curRot = (p1.curRot + 3) % 4;
@@ -380,21 +409,16 @@ int main() {
                     }
                 }
             }
-            // ---- 先行入力バッファの更新 ----
-            // 「押している間は記録し続け、離したら記録を消す」方式。
-            // キーリピートイベントも含めて処理し、長押し中は常に最新の状態を保持する。
             if (!paused && !aiVsAi && !p1.gameOver) {
                 if (e.type == SDL_EVENT_KEY_DOWN) {
                     switch (e.key.key) {
-                        case SDLK_Z: p1.pendingSpawnRotDelta = 3; break; // 反時計回り。押している間は保持
-                        case SDLK_X: p1.pendingSpawnRotDelta = 1; break; // 時計回り
+                        case SDLK_Z: p1.pendingSpawnRotDelta = 3; break;
+                        case SDLK_X: p1.pendingSpawnRotDelta = 1; break;
                         default: break;
                     }
                 } else if (e.type == SDL_EVENT_KEY_UP) {
                     switch (e.key.key) {
                         case SDLK_Z: case SDLK_X:
-                            // 離したキーが「現在保持中の先行入力」と同じ回転方向のときだけクリアする。
-                            // (Z押しっぱなし→Xも押す→Zだけ離す、のような場合にXの意図を消さないため)
                             if ((e.key.key == SDLK_Z && p1.pendingSpawnRotDelta == 3) ||
                                 (e.key.key == SDLK_X && p1.pendingSpawnRotDelta == 1)) {
                                 p1.pendingSpawnRotDelta = 0;
@@ -412,7 +436,6 @@ int main() {
                 } else if (e.type == SDL_EVENT_KEY_UP) {
                     if (e.key.key == SDLK_LEFT) {
                         leftHeld = false;
-                        // 離したのが「現在保持中の先行入力」と同じ方向のときだけクリアする
                         if (p1.pendingSpawnXDelta == -1) p1.pendingSpawnXDelta = rightHeld ? 1 : 0;
                     }
                     if (e.key.key == SDLK_RIGHT) {
@@ -423,8 +446,6 @@ int main() {
                 }
             }
 
-            // ---- 人間側P1の生キー操作をoracleへ非同期ストリームで送る ----
-            // (aiVsAi中はP1もAIが操作するため人間の入力ではなくなり、送らない)
             if (!aiVsAi && (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP)
                 && !e.key.repeat) {
                 auto kc = toKeyCode(e.key.key, e.type == SDL_EVENT_KEY_DOWN);
@@ -436,7 +457,6 @@ int main() {
         }
         
         if (!paused) {
-            // P1 (Human or AI)
             if (!aiVsAi && !p1.gameOver) {
                 int dir = 0;
                 if (leftHeld && !rightHeld) dir = -1;
@@ -444,49 +464,39 @@ int main() {
                 applyMoveRepeat(p1, dir, dt, 0.13, 0.02);
             }
 
-            // score差分でロック時のダメージ発生を検知するため、ステップ前の値を控える
             int p1ScoreBefore = p1.score;
             int p2ScoreBefore = p2.score;
 
-            // ---- oracleからの最新応答をaiActへ反映 ----
-            // (応答を待たずに毎フレーム進む。届いていればreadyの値ごと反映するだけ)
             oracleP2.pollAndApply(aiAct);
             if (aiVsAi) oracleP1.pollAndApply(p1Act);
 
             if (aiVsAi && !p1.gameOver) {
-                // AI vs AiモードではP1側もoracleが判断するが、readyを待たずに
-                // 直近の指示のままexecuteAIを進める(未着のときはact.ready=falseの
-                // ままなのでexecuteAIは何もせず、次に応答が届いた時点で動き出す。
-                // これは「待つ」のではなく、単に「まだ指示がない」状態と同じ扱い)。
                 executeAI(p1, p1Act, dt, aiDasDelay, aiArrDelay);
             }
 
             if (!p2.gameOver) {
-                // 通常モード(Human vs AI)・AI vs AiモードともP2は常にoracle判断。
-                // 通常モードではready==falseの間、executeAIが何もしないことで
-                // 「AI側ピースの移動確定だけを保留する」待ち合わせが実現される。
                 executeAI(p2, aiAct, dt, aiDasDelay, aiArrDelay);
             }
 
-            // 重力落下（人間操作時のP1にも、AI操作中の両者にも共通して働く）
             if (!p1.gameOver) stepPlayer(p1, dt, softDropSpeed);
             if (!p2.gameOver) stepPlayer(p2, dt, softDropSpeed);
 
-            // ---- 着地検出とBoardStateFrame送信 ----
-            // lockAndSpawnは必ずcurTypeを更新するため、前フレームからの変化を
-            // 「一手打たれた(着地した)」の確実な検出条件として使う。
-            // 検出したらoracleへ新しい盤面を送り、ready状態をリセットする
-            // (次の着地までの間、古いreadyのまま誤って動き続けないようにする)。
-            if (!aiVsAi && p2.curType != p2PrevCurType) {
+            // curTypeの変化(=lockAndSpawnが起きたこと)は、PrevCurTypeを
+            // 上書きする前にここでフラグとして控えておく。notifyMinoPlacedは
+            // 「ミノが着地した瞬間」にだけ呼びたいので、この判定を後段でも使う。
+            bool p1Locked = (p1.curType != p1PrevCurType);
+            bool p2Locked = (p2.curType != p2PrevCurType);
+
+            if (!aiVsAi && p2Locked) {
                 oracleP2.sendBoardState(p2);
                 aiAct.ready = false;
             }
             if (aiVsAi) {
-                if (p2.curType != p2PrevCurType) {
+                if (p2Locked) {
                     oracleP2.sendBoardState(p2);
                     aiAct.ready = false;
                 }
-                if (p1.curType != p1PrevCurType) {
+                if (p1Locked) {
                     oracleP1.sendBoardState(p1);
                     p1Act.ready = false;
                 }
@@ -494,8 +504,6 @@ int main() {
             p2PrevCurType = p2.curType;
             p1PrevCurType = p1.curType;
 
-            // スポーン位置での衝突をゲームオーバーとして扱う
-            // game_engine.cpp 側にこの判定が無いため、ここで補完する
             auto checkSpawnCollision = [](PlayerState& ps) {
                 if (ps.gameOver) return;
                 const MinoShape& shape = SHAPES[(int)ps.curType][ps.curRot];
@@ -504,27 +512,51 @@ int main() {
             checkSpawnCollision(p1);
             checkSpawnCollision(p2);
 
-            // ロックで発生したダメージは、送り主自身のoutgoingAttacksに積む
-            // （outgoingAttacks = そのプレイヤーが繰り出した攻撃、という向きで統一）
-            int p1Damage = p1.score - p1ScoreBefore;
-            int p2Damage = p2.score - p2ScoreBefore;
-            if (p1Damage > 0) p1.outgoingAttacks.push_back({0.0, p1Damage / 10});
-            if (p2Damage > 0) p2.outgoingAttacks.push_back({0.0, p2Damage / 10});
+            // ---- ロックで発生したダメージを、相殺込みで一括確定する ----
+            // fireAttackは「呼ばれた瞬間のincomingAttacks残高」とだけ相殺し、
+            // 相殺しきれなかった分をディレイなしで即座に自分の盤面へ反映する。
+            // 相殺後に残った自分の攻撃だけが、travelTime付きでoutgoingAttacksに積まれる。
+            // 全消し(盤面が完全に空)の場合はtravelTime=0を渡し、即着弾にする。
+            int p1Damage = (p1.score - p1ScoreBefore) / 10;
+            if (p1Damage > 0) {
+                bool p1PerfectClear = true;
+                for (int r = 0; r < BOARD_H && p1PerfectClear; ++r)
+                    if (p1.board[r] != 0) p1PerfectClear = false;
+                fireAttack(p1, p1Damage, gameTimeNow, kAttackTravelTime, p1PerfectClear, garbageRng);
+            }
+            int p2Damage = (p2.score - p2ScoreBefore) / 10;
+            if (p2Damage > 0) {
+                bool p2PerfectClear = true;
+                for (int r = 0; r < BOARD_H && p2PerfectClear; ++r)
+                    if (p2.board[r] != 0) p2PerfectClear = false;
+                fireAttack(p2, p2Damage, gameTimeNow, kAttackTravelTime, p2PerfectClear, garbageRng);
+            }
 
-            // 送り主側の保留分を取り出し、対戦相手の盤面へガベージとして反映する
-            auto dispatchAttacks = [&](PlayerState& sender, PlayerState& receiver) {
-                int totalLines = 0;
-                for (auto& atk : sender.outgoingAttacks) totalLines += atk.damage;
+            // ---- 相殺済みのoutgoingAttacksを、相手のincomingAttacksへ移すだけ ----
+            // (相殺はfireAttackの中で既に完了しているので、ここではもう相殺しない)
+            auto dispatchAttacks = [](PlayerState& sender, PlayerState& receiver) {
+                for (auto& atk : sender.outgoingAttacks) {
+                    receiver.incomingAttacks.push_back(atk);
+                }
                 sender.outgoingAttacks.clear();
-                if (totalLines > 0 && !receiver.gameOver) AddGarbage(receiver.board, totalLines, garbageRng);
             };
             dispatchAttacks(p1, p2);
             dispatchAttacks(p2, p1);
+
+            // ---- 自分がミノを置いたら、自分に向かって来ている攻撃のnumMinosPlacedを進める ----
+            if (p1Locked) notifyMinoPlaced(p1);
+            if (p2Locked) notifyMinoPlaced(p2);
+
+            // ---- 着弾判定 (絶対時刻比較。相手の処理速度には一切依存しない) ----
+            advanceIncomingAttacks(p1, gameTimeNow, garbageRng);
+            advanceIncomingAttacks(p2, gameTimeNow, garbageRng);
         }
 
         renderGame(p1, p2, softDropSpeed, aiDasDelay, aiArrDelay, aiThinkInterval, paused, aiVsAi);
     }
 
+    p1BoardCache.destroy();
+    p2BoardCache.destroy();
     if (font) TTF_CloseFont(font);
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
