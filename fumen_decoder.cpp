@@ -1,9 +1,3 @@
-// ===================================================================
-// fumen_decoder.cpp - fumen(テト譜) デコーダー 実装
-//
-// fumenParse.ts の Buffer / InnerField / decodeFieldDiff / decodeAction /
-// decode() をC++に移植したもの。コメント・Quiz・エンコードは省略。
-// ===================================================================
 #include "fumen_decoder.h"
 #include <regex>
 #include <stdexcept>
@@ -12,7 +6,6 @@ namespace FumenDecoder {
 
 namespace {
 
-// ---- Base64風テーブル (fumenParse.ts の ENCODE_TABLE と同一) ----
 const std::string ENCODE_TABLE =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 constexpr int TABLE_LEN = 64;
@@ -22,7 +15,6 @@ int tableIndexOf(char c) {
     return pos == std::string::npos ? -1 : static_cast<int>(pos);
 }
 
-// ---- Buffer: fumen文字列を数値列として読み出す ----
 class Buffer {
 public:
     explicit Buffer(const std::string& data) {
@@ -56,18 +48,13 @@ private:
     size_t pos;
 };
 
-// ---- InnerField: fumenの内部表現 (10x23、ガベージ領域含む) ----
-// fumenParse.ts の InnerField/PlayField を簡略化した版。
-// ここでは可視フィールド(y>=0)のみを扱う。ガベージ(y<0)はデコード時に
-// フィールド差分を正しく読み進めるために必要だが、tmpl用途では
-// 最終的に可視フィールドしか使わないため、別配列として保持するに留める。
 struct InnerField {
-    std::array<int, FIELD_BLOCKS> field{};       // y=0..22 (下から上)
-    std::array<int, FIELD_W> garbage{};           // y=-1相当のガベージ1行分
+    std::array<int, FIELD_BLOCKS> field{};
+    std::array<int, FIELD_W> garbage{};
 
     int getAt(int x, int y) const {
         if (y >= 0) return field[x + y * FIELD_W];
-        return garbage[x]; // ガベージは1行分のみ扱う (fumenの一般的な用途で十分)
+        return garbage[x];
     }
     void addAt(int x, int y, int diff) {
         if (y >= 0) field[x + y * FIELD_W] += diff;
@@ -75,7 +62,6 @@ struct InnerField {
     }
 };
 
-// ---- フィールド差分デコード (fumenParse.ts の decodeFieldDiff 相当) ----
 struct FieldDiffResult {
     InnerField field;
     bool changed;
@@ -103,30 +89,27 @@ FieldDiffResult decodeFieldDiff(const InnerField& prev, Buffer& buffer) {
     return { field, changed };
 }
 
-// ---- アクション座標デコード (fumenParse.ts の decodePosition 相当) ----
-// type: 0=Empty,1=I,2=L,3=O,4=Z,5=T,6=J,7=S,8=Gray
-// rotation: 0=Reverse,1=Right,2=Spawn,3=Left (fumen独自の並び順)
 struct DecodedCoord { int x, y; };
 
 DecodedCoord decodePosition(long long value, int type, int rotation) {
     int x = static_cast<int>(value % FIELD_W);
     int y = FIELD_H - static_cast<int>(value / FIELD_W) - 1;
 
-    if (type == 3 && rotation == 3) { x += 1; y -= 1; }        // O, Left
-    else if (type == 3 && rotation == 0) { x += 1; }           // O, Reverse
-    else if (type == 3 && rotation == 2) { y -= 1; }           // O, Spawn
-    else if (type == 1 && rotation == 0) { x += 1; }           // I, Reverse
-    else if (type == 1 && rotation == 3) { y -= 1; }           // I, Left
-    else if (type == 7 && rotation == 2) { y -= 1; }           // S, Spawn
-    else if (type == 7 && rotation == 1) { x -= 1; }           // S, Right
-    else if (type == 4 && rotation == 2) { y -= 1; }           // Z, Spawn
-    else if (type == 4 && rotation == 3) { x += 1; }           // Z, Left
+    if (type == 3 && rotation == 3) { x += 1; y -= 1; }
+    else if (type == 3 && rotation == 0) { x += 1; }
+    else if (type == 3 && rotation == 2) { y -= 1; }
+    else if (type == 1 && rotation == 0) { x += 1; }
+    else if (type == 1 && rotation == 3) { y -= 1; }
+    else if (type == 7 && rotation == 2) { y -= 1; }
+    else if (type == 7 && rotation == 1) { x -= 1; }
+    else if (type == 4 && rotation == 2) { y -= 1; }
+    else if (type == 4 && rotation == 3) { x += 1; }
 
     return { x, y };
 }
 
 struct DecodedAction {
-    int type;       // ミノ種 (0=Empty,1..7,8=Gray)
+    int type;
     int rotation;
     int x, y;
     bool rise, mirror, colorize, comment, lock;
@@ -150,32 +133,29 @@ DecodedAction decodeAction(long long value) {
     return { type, rotation, coord.x, coord.y, rise, mirror, colorize, comment, lock };
 }
 
-// ---- ミノの形状 (fumenParse.ts の getPieces 相当) ----
-// x,yはミノ基準点からの相対座標。type: 1=I,2=L,3=O,4=Z,5=T,6=J,7=S
 std::vector<std::pair<int,int>> getPieceOffsets(int type) {
     switch (type) {
-        case 1: return {{0,0},{-1,0},{1,0},{2,0}};   // I
-        case 5: return {{0,0},{-1,0},{1,0},{0,1}};   // T
-        case 3: return {{0,0},{1,0},{0,1},{1,1}};    // O
-        case 2: return {{0,0},{-1,0},{1,0},{1,1}};   // L
-        case 6: return {{0,0},{-1,0},{1,0},{-1,1}};  // J
-        case 7: return {{0,0},{-1,0},{0,1},{1,1}};   // S
-        case 4: return {{0,0},{1,0},{0,1},{-1,1}};   // Z
+        case 1: return {{0,0},{-1,0},{1,0},{2,0}};
+        case 5: return {{0,0},{-1,0},{1,0},{0,1}};
+        case 3: return {{0,0},{1,0},{0,1},{1,1}};
+        case 2: return {{0,0},{-1,0},{1,0},{1,1}};
+        case 6: return {{0,0},{-1,0},{1,0},{-1,1}};
+        case 7: return {{0,0},{-1,0},{0,1},{1,1}};
+        case 4: return {{0,0},{1,0},{0,1},{-1,1}};
         default: return {};
     }
 }
 
 std::vector<std::pair<int,int>> rotateOffsets(std::vector<std::pair<int,int>> pos, int rotation) {
-    // rotation: 0=Reverse,1=Right,2=Spawn,3=Left
     switch (rotation) {
-        case 2: return pos; // Spawn = そのまま
-        case 3: // Left
+        case 2: return pos;
+        case 3:
             for (auto& p : pos) p = { -p.second, p.first };
             return pos;
-        case 0: // Reverse
+        case 0:
             for (auto& p : pos) p = { -p.first, -p.second };
             return pos;
-        case 1: // Right
+        case 1:
             for (auto& p : pos) p = { p.second, -p.first };
             return pos;
     }
@@ -184,30 +164,24 @@ std::vector<std::pair<int,int>> rotateOffsets(std::vector<std::pair<int,int>> po
 
 bool isMinoType(int type) { return type != 0 && type != 8; }
 
-} // namespace (無名)
+}
 
-// ===================================================================
-// 公開API
-// ===================================================================
 std::vector<DecodedPage> decode(const std::string& fumenInput) {
     std::vector<DecodedPage> pages;
 
     try {
         std::string data = fumenInput;
 
-        // クエリパラメータ(&以降)を除去
         auto ampPos = data.find('&');
         if (ampPos != std::string::npos) data = data.substr(0, ampPos);
 
-        // "v115@" のようなバージョンヘッダーを探す
         std::smatch m;
         std::regex verRe("[vmd]115@");
         if (!std::regex_search(data, m, verRe)) {
-            return {}; // サポート外バージョン。空を返し、呼び出し側でスキップさせる。
+            return {};
         }
         data = data.substr(m.position() + 5);
 
-        // 区切り文字 '?' や空白を除去
         std::string cleaned;
         cleaned.reserve(data.size());
         for (char c : data) {
@@ -232,15 +206,12 @@ std::vector<DecodedPage> decode(const std::string& fumenInput) {
 
             DecodedAction action = decodeAction(buf.poll(3));
 
-            // コメント本体は読み飛ばす (tmpl用途では不要。ただしバッファ位置は
-            // 正しく進める必要があるため、長さ分だけpollする)
             if (action.comment) {
                 long long len = buf.poll(2);
-                long long groups = (len + 3) / 4; // Math.ceil(len/4)
+                long long groups = (len + 3) / 4;
                 for (long long i = 0; i < groups; ++i) buf.poll(5);
             }
 
-            // ページの地形を確定 (ミノをロックしてからのスナップショット)
             InnerField locked = fieldResult.field;
             if (action.lock) {
                 if (isMinoType(action.type)) {
@@ -253,7 +224,6 @@ std::vector<DecodedPage> decode(const std::string& fumenInput) {
                         }
                     }
                 }
-                // ライン消去 (下から詰める)
                 std::array<int, FIELD_BLOCKS> newField{};
                 int writeY = 0;
                 for (int y = 0; y < FIELD_H; ++y) {
@@ -279,8 +249,13 @@ std::vector<DecodedPage> decode(const std::string& fumenInput) {
 
             prevField = locked;
         }
-    } catch (const std::exception&) {
-        return {}; // 不正なfumen: 呼び出し側で「このtmplは組み込まない」と扱えるよう空で返す
+    } catch (const std::exception& ex) {
+#ifdef FUMEN_DEBUG_THROW
+        throw;
+#else
+        (void)ex;
+        return {};
+#endif
     }
 
     return pages;
@@ -289,9 +264,8 @@ std::vector<DecodedPage> decode(const std::string& fumenInput) {
 std::bitset<30> pageToTopNRows(const DecodedPage& page, int depth) {
     if (depth < 1 || depth > 3) depth = 3;
     std::bitset<30> bits;
-    // fieldRaw: y=0が最下段、y=FIELD_H-1が最上段。上からdepth行を抽出する。
     for (int r = 0; r < depth; ++r) {
-        int y = FIELD_H - depth + r; // 上からdepth行のうちr行目
+        int y = FIELD_H - depth + r;
         if (y < 0 || y >= FIELD_H) continue;
         for (int x = 0; x < FIELD_W; ++x) {
             if (page.fieldRaw[x + y * FIELD_W] != 0) bits.set(r * FIELD_W + x);
@@ -302,8 +276,6 @@ std::bitset<30> pageToTopNRows(const DecodedPage& page, int depth) {
 
 BoardBits pageToBoardBits(const DecodedPage& page) {
     BoardBits board{};
-    // fumenのFIELD_H=23に対し、ゲーム側BoardBitsはBOARD_BUFFER=40行。
-    // 下から詰めて対応させ、ゲーム内表示範囲(BOARD_H=20)に収まる部分を使う。
     for (int y = 0; y < FIELD_H && y < BOARD_BUFFER; ++y) {
         uint16_t row = 0;
         for (int x = 0; x < FIELD_W; ++x) {
@@ -314,4 +286,4 @@ BoardBits pageToBoardBits(const DecodedPage& page) {
     return board;
 }
 
-} // namespace FumenDecoder
+}  // namespace FumenDecoder
