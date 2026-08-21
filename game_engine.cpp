@@ -135,7 +135,7 @@ void AddGarbage(BoardBits& board, int lines, std::mt19937& rng) {
     }
 }
 
-// ---- Garbage (新方式: baseCol + numMinosPlaced による区間オフセット生成) ----
+// ---- Garbage (新方法: baseCol + numMinosPlaced による区域オフセット生成) ----
 void AddGarbageWithOffset(BoardBits& board, int lines, int baseCol,
                            int numMinosPlaced, std::mt19937& rng,
                            float successProb) {
@@ -204,17 +204,17 @@ void AddGarbageWithOffset(BoardBits& board, int lines, int baseCol,
     }
 }
 
-// ---- 攻撃の発生 (相殺込み・一回きり) ----
-// 呼ばれた瞬間のincomingAttacksの残高だけを対象に、その場で相殺する。
-// 継続的な監視は行わない: この呼び出しが終われば相殺は完了しており、
-// 以後(自分がまだ次の攻撃を出していない間に)incomingAttacksへ新たに
-// 積まれる攻撃は、今回の相殺には一切関与せずディレイなしでそのまま着弾する。
+// ---- 攻撃の発生 (相殺処理・一括きり) ----
+// 呼び出された瞬間のincomingAttacksの総和を相殺する。
+// 連続的な視覚は行わない: この呼び出しが終われば相殺は完了し、以降(
+// 積まれた攻撃は、次に自分が攻撃を出すまでincomingAttacksへ追加されたまま残る。
+// isPerfectClear が true の場合、送る分travelTimeは0になる(即座)。
 void fireAttack(PlayerState& attacker, int damage, double gameTimeNow,
                  double travelTime, bool isPerfectClear, std::mt19937& rng) {
     if (damage <= 0) return;
 
-    // 1. 相殺: incomingAttacks を古い順(fireTimeが早い順=キュー先頭から)に
-    //    今回のdamageで食っていく。
+    // 1. 相殺: 見かけ上届いていないincomingAttacksのみを相殺
+    //    (見かけ上届いている攻撃は相殺しない = 貫通する)
     int remainingDamage = damage;
     std::vector<PendingAttack> stillIncoming;
     stillIncoming.reserve(attacker.incomingAttacks.size());
@@ -224,46 +224,68 @@ void fireAttack(PlayerState& attacker, int damage, double gameTimeNow,
             stillIncoming.push_back(inc);
             continue;
         }
+        
+        // 見かけ上届いている攻撃は相殺しない
+        if (inc.isVisuallyArrived) {
+            stillIncoming.push_back(inc);
+            continue;
+        }
+        
         if (inc.damage <= remainingDamage) {
-            // このincoming攻撃は完全に相殺される。attacker側のdamageを消費する。
+            // このincoming攻撃は完全に相殺される
             remainingDamage -= inc.damage;
-            // inc自体はstillIncomingへ入れない(相殺で消える)。
+            // 相殺されたマーク
+            inc.isCanceled = true;
         } else {
-            // 部分的にしか相殺できない。残りをディレイなしで即座に受ける対象にする。
+            // 部分的にしか相殺できない
             inc.damage -= remainingDamage;
             remainingDamage = 0;
-            // ディレイなしで即座に盤面へ反映し、incomingAttacksからは除去する。
-            if (!attacker.gameOver) {
-                AddGarbageWithOffset(attacker.board, inc.damage, inc.baseCol,
-                                      inc.numMinosPlaced, rng);
-            }
+            inc.isCanceled = false; // 部分的に残ったので相殺されていない
+        }
+    }
+    
+    // 相殺されなかった攻撃を保持
+    for (auto& inc : attacker.incomingAttacks) {
+        if (!inc.isCanceled) {
+            stillIncoming.push_back(inc);
         }
     }
     attacker.incomingAttacks = std::move(stillIncoming);
 
-    // 2. 相殺後にdamage側が余った分だけ、ディレイありで相手へ送る攻撃として確定する。
+    // 2. 相殺後にdamageが残っていた場合、火力を発生
     if (remainingDamage <= 0) return;
 
     std::uniform_int_distribution<int> colDist(0, 9);
     PendingAttack atk;
     atk.damage = remainingDamage;
     atk.fireTime = gameTimeNow;
-    atk.travelTime = isPerfectClear ? 0.0 : travelTime;
+    atk.visualArriveTime = gameTimeNow + VISUAL_SEND_DELAY; // 1.0秒後に見かけ上届く
+    atk.travelTime = isPerfectClear ? 0.0 : TRAVEL_DELAY; // 0.5秒後に実際に届く
     atk.baseCol = colDist(rng);
     atk.numMinosPlaced = 0;
+    atk.isVisuallyArrived = false;
+    atk.isCanceled = false;
     attacker.outgoingAttacks.push_back(atk);
+    
+    // 最後に見かけ上届いた火力を更新
+    attacker.lastVisualAttack = atk;
 }
 
-// ---- 受け主がミノを1つ置いたときに呼ぶ ----
+// ---- 受け手がミノを1つ置いたときに呼ばれる ----
+// incomingAttacks内の全ての未着弾攻撃のnumMinosPlacedをインサメントする
 void notifyMinoPlaced(PlayerState& receiver) {
     for (auto& atk : receiver.incomingAttacks) {
         atk.numMinosPlaced++;
     }
+    
+    // 見かけ上届いた火力のnumMinosPlacedも更新
+    receiver.lastVisualAttack.numMinosPlaced = receiver.incomingAttacks.empty() ? 
+        receiver.lastVisualAttack.numMinosPlaced : receiver.incomingAttacks.back().numMinosPlaced;
 }
 
 // ---- 着弾判定を進める ----
-// fireTime + travelTime を自分のローカルgameTimeNowと比較するだけで、
-// 送り主側の処理タイミングには一切依存しない。
+// fireTime + travelTime を受け手のローカルgameTimeNowと比較するだけで、
+// 送り主の処理速度やフレームレートには一片依存しない。
 void advanceIncomingAttacks(PlayerState& receiver, double gameTimeNow, std::mt19937& rng) {
     if (receiver.incomingAttacks.empty()) return;
 
@@ -271,11 +293,28 @@ void advanceIncomingAttacks(PlayerState& receiver, double gameTimeNow, std::mt19
     stillWaiting.reserve(receiver.incomingAttacks.size());
 
     for (auto& atk : receiver.incomingAttacks) {
-        double arrivalTime = atk.fireTime + atk.travelTime;
-        if (gameTimeNow < arrivalTime) {
+        // 見かけ上届く時刻をチェック
+        if (gameTimeNow >= atk.visualArriveTime && !atk.isVisuallyArrived) {
+            atk.isVisuallyArrived = true;
+            // 見かけ上届いた火力を記録
+            receiver.lastVisualAttack = atk;
+            
+            // ライン消去中かつ待機状態の場合、すぐに見かけ上届いた判定にする
+            if (receiver.isLineClearing) {
+                // すぐに穴バラカウントを始める
+                // 見かけ上届いたので、実際の届くタイミングまで待つ
+                // ただしライン消去中は貫通する
+            }
+        }
+        
+        // 実際に届く時刻をチェック
+        double actualArrivalTime = atk.visualArriveTime + atk.travelTime;
+        if (gameTimeNow < actualArrivalTime) {
             stillWaiting.push_back(atk);
             continue;
         }
+        
+        // 実際に届いた場合、ガベージを追加
         if (!receiver.gameOver) {
             AddGarbageWithOffset(receiver.board, atk.damage, atk.baseCol,
                                   atk.numMinosPlaced, rng);
@@ -285,9 +324,43 @@ void advanceIncomingAttacks(PlayerState& receiver, double gameTimeNow, std::mt19
     receiver.incomingAttacks = std::move(stillWaiting);
 }
 
+// ---- 見かけ上送られた攻撃の更新 ----
+// 火力発生からVISUAL_SEND_DELAY後に見かけ上送られた状態にする
+void updateOutgoingAttacks(PlayerState& attacker, double gameTimeNow) {
+    for (auto& atk : attacker.outgoingAttacks) {
+        // 見かけ上送られた時間をチェック
+        if (gameTimeNow >= atk.visualArriveTime && !atk.isVisuallyArrived) {
+            atk.isVisuallyArrived = true;
+            // 最後に見かけ上送られた火力を更新
+            attacker.lastVisualAttack = atk;
+        }
+    }
+}
+
+// ---- ライン消去中に追加で火力を作った場合の処理 ----
+// 受け手がライン消去中かつ待機状態の場合、すぐに見かけ上届いた判定にする
+void updateIncomingForLineClearing(PlayerState& receiver, double gameTimeNow) {
+    if (!receiver.isLineClearing) return;
+    
+    // 待機状態（見かけ上届いていない）の攻撃がある場合
+    for (auto& atk : receiver.incomingAttacks) {
+        if (!atk.isVisuallyArrived) {
+            // すぐに見かけ上届いた判定にする
+            atk.isVisuallyArrived = true;
+            receiver.lastVisualAttack = atk;
+            
+            // すぐに穴バラカウントを始める（実際の届くタイミングまで待つ）
+            // ただしライン消去中は貫通する
+            // 穴バラ処理は別々に行う
+            break; // 最初の1つだけ処理
+        }
+    }
+}
+
 std::vector<PlacementResult> EnumerateAllPlacements(
     const BoardBits& board, PType pieceType,
-    bool canHold, PType holdType, int btb, int combo)
+    bool canHold, PType holdType,
+    int btb, int combo)
 {
     std::vector<PlacementResult> results;
     std::vector<std::pair<PType, bool>> pieces = {{pieceType, false}};
@@ -445,6 +518,8 @@ void PlayerState::init(int seed) {
     pendingSpawnRotDelta = 0;
     pendingSpawnXDelta = 0;
     lastSpawnMode = SpawnMode::Normal;
+    isLineClearing = false;
+    lastVisualAttack = {};
 }
 
 PType PlayerState::popNext() {
@@ -533,6 +608,9 @@ void applyMoveRepeat(PlayerState& ps, int dir, double dt, double das, double arr
 }
 
 void finishLineClear(PlayerState& ps, int cleared, bool tSpin, bool perfectClear) {
+    // ライン消去中フラグを設定
+    ps.isLineClearing = true;
+    
     if (cleared > 0) ++ps.combo; else ps.combo = 0;
     int damage = CalculateDamage(cleared, tSpin, ps.btb, ps.combo, perfectClear);
     damage += ps.damageBuff;
@@ -542,9 +620,17 @@ void finishLineClear(PlayerState& ps, int cleared, bool tSpin, bool perfectClear
     ps.linesCleared = damage;
     ps.score += damage * 10;
     ps.level = 1 + ps.score / 100;
+    
+    // 火力を発生（相殺処理を行う）
+    std::mt19937 rng(std::random_device{}());
+    fireAttack(ps, damage, 0.0, 0.0, perfectClear, rng);
+    
     ps.curType = ps.popNext();
     spawnPiece(ps);
     ps.canHold = true;
+    
+    // ライン消去完了
+    ps.isLineClearing = false;
 }
 
 void lockAndSpawn(PlayerState& ps) {
