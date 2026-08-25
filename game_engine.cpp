@@ -3,6 +3,7 @@
 // ===================================================================
 #include "game_engine.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 const PType ALL_TYPES[7] = {PType::I, PType::O, PType::T, PType::S, PType::Z, PType::J, PType::L};
@@ -22,16 +23,90 @@ const MinoShape SHAPES[7][4] = {
     { {{0x4,0x7,0,0},2}, {{0x2,0x2,0x6,0},3}, {{0x7,0x1,0,0},2}, {{0x3,0x2,0x2,0},3} }
 };
 
-const int8_t KICK_I[8][5][2] = {
-    {{0,0},{-1,0},{2,0},{-1,0},{2,0}},
-    {{0,0},{1,0},{-2,0},{1,0},{-2,0}},
-    {{0,0},{1,0},{-2,0},{1,0},{-2,0}},
-    {{0,0},{-1,0},{2,0},{-1,0},{2,0}},
-    {{0,0},{1,0},{-2,0},{1,0},{-2,0}},
-    {{0,0},{-1,0},{2,0},{-1,0},{2,0}},
-    {{0,0},{-1,0},{2,0},{-1,0},{2,0}},
-    {{0,0},{1,0},{-2,0},{1,0},{-2,0}}
+// --- SRS I-piece kick generation -----------------------------------
+// Derived recurrence (confirmed term-by-term against the real SRS table):
+//   x1, x2 are seeds; y1=y2=y3=0; y4 is a seed.
+//   x3 = -x2 - 1
+//   x4 = -x3 - 1
+//   x5 = -x4 - 1
+//   y5 = x3 - y4
+struct KickRow { int8_t v[5][2]; };
+
+constexpr KickRow GenIRow(int8_t x1, int8_t x2, int8_t y4) {
+    int8_t x3 = static_cast<int8_t>(-x2 - 1);
+    int8_t x4 = static_cast<int8_t>(-x3 - 1);
+    int8_t x5 = static_cast<int8_t>(-x4 - 1);
+    int8_t y5 = static_cast<int8_t>(x3 - y4);
+    return KickRow{{ {x1,0}, {x2,0}, {x3,0}, {x4,y4}, {x5,y5} }};
+}
+
+constexpr KickRow NegateRow(const KickRow& r) {
+    return KickRow{{
+        {static_cast<int8_t>(-r.v[0][0]), static_cast<int8_t>(-r.v[0][1])},
+        {static_cast<int8_t>(-r.v[1][0]), static_cast<int8_t>(-r.v[1][1])},
+        {static_cast<int8_t>(-r.v[2][0]), static_cast<int8_t>(-r.v[2][1])},
+        {static_cast<int8_t>(-r.v[3][0]), static_cast<int8_t>(-r.v[3][1])},
+        {static_cast<int8_t>(-r.v[4][0]), static_cast<int8_t>(-r.v[4][1])}
+    }};
+}
+
+// Second base row (1>>2) uses a different recurrence, confirmed term-by-term:
+//   x1, x2 are seeds; x_n = 1 - x_{n-1}
+//   y1 = y2 = 0
+//   y_n = (x_{n-2} + x_{n-1} - x_n) wrapped into [-2,2] via mod 3
+constexpr int8_t Mod3Center(int v) {
+    while (v > 2)  v -= 3;
+    while (v < -2) v += 3;
+    return static_cast<int8_t>(v);
+}
+
+constexpr KickRow GenIRow2(int8_t x1, int8_t x2) {
+    int8_t x3 = static_cast<int8_t>(1 - x2);
+    int8_t x4 = static_cast<int8_t>(1 - x3);
+    int8_t x5 = static_cast<int8_t>(1 - x4);
+    int8_t y3 = Mod3Center(x1 + x2 - x3);
+    int8_t y4 = Mod3Center(x2 + x3 - x4);
+    int8_t y5 = Mod3Center(x3 + x4 - x5);
+    return KickRow{{ {x1,0}, {x2,0}, {x3,y3}, {x4,y4}, {x5,y5} }};
+}
+
+// Two independent base rows exist (0>>1 and 1>>2); every other row is
+// either the negation of one of these or an exact reuse (verified against
+// the official SRS table: idx4==idx1, idx5==idx0, idx6==idx3, idx7==idx2).
+constexpr KickRow I_ROW_0_1 = GenIRow(0, -2, -1);   // 0>>1, seeds from user's derivation
+constexpr KickRow I_ROW_1_0 = NegateRow(I_ROW_0_1); // 1>>0
+constexpr KickRow I_ROW_1_2 = GenIRow2(0, -1);      // 1>>2, seeds from user's second derivation
+constexpr KickRow I_ROW_2_1 = NegateRow(I_ROW_1_2); // 2>>1
+
+// tableIdx layout: 0:0>>1 1:1>>0 2:1>>2 3:2>>1 4:2>>3 5:3>>2 6:3>>0 7:0>>3
+// idx4/5/6/7 are exact reuses of idx1/0/3/2 (verified against the official
+// SRS table) rather than separately generated/duplicated literals.
+constexpr KickRow KICK_I_ROWS[8] = {
+    I_ROW_0_1, I_ROW_1_0, I_ROW_1_2, I_ROW_2_1,
+    I_ROW_1_0, I_ROW_0_1, I_ROW_2_1, I_ROW_1_2
 };
+
+constexpr std::array<std::array<std::array<int8_t,2>,5>,8> BuildKickI() {
+    std::array<std::array<std::array<int8_t,2>,5>,8> out{};
+    for (int r = 0; r < 8; ++r)
+        for (int k = 0; k < 5; ++k) {
+            out[r][k][0] = KICK_I_ROWS[r].v[k][0];
+            out[r][k][1] = KICK_I_ROWS[r].v[k][1];
+        }
+    return out;
+}
+
+const int8_t KICK_I[8][5][2] = {
+    {{KICK_I_ROWS[0].v[0][0],KICK_I_ROWS[0].v[0][1]},{KICK_I_ROWS[0].v[1][0],KICK_I_ROWS[0].v[1][1]},{KICK_I_ROWS[0].v[2][0],KICK_I_ROWS[0].v[2][1]},{KICK_I_ROWS[0].v[3][0],KICK_I_ROWS[0].v[3][1]},{KICK_I_ROWS[0].v[4][0],KICK_I_ROWS[0].v[4][1]}},
+    {{KICK_I_ROWS[1].v[0][0],KICK_I_ROWS[1].v[0][1]},{KICK_I_ROWS[1].v[1][0],KICK_I_ROWS[1].v[1][1]},{KICK_I_ROWS[1].v[2][0],KICK_I_ROWS[1].v[2][1]},{KICK_I_ROWS[1].v[3][0],KICK_I_ROWS[1].v[3][1]},{KICK_I_ROWS[1].v[4][0],KICK_I_ROWS[1].v[4][1]}},
+    {{KICK_I_ROWS[2].v[0][0],KICK_I_ROWS[2].v[0][1]},{KICK_I_ROWS[2].v[1][0],KICK_I_ROWS[2].v[1][1]},{KICK_I_ROWS[2].v[2][0],KICK_I_ROWS[2].v[2][1]},{KICK_I_ROWS[2].v[3][0],KICK_I_ROWS[2].v[3][1]},{KICK_I_ROWS[2].v[4][0],KICK_I_ROWS[2].v[4][1]}},
+    {{KICK_I_ROWS[3].v[0][0],KICK_I_ROWS[3].v[0][1]},{KICK_I_ROWS[3].v[1][0],KICK_I_ROWS[3].v[1][1]},{KICK_I_ROWS[3].v[2][0],KICK_I_ROWS[3].v[2][1]},{KICK_I_ROWS[3].v[3][0],KICK_I_ROWS[3].v[3][1]},{KICK_I_ROWS[3].v[4][0],KICK_I_ROWS[3].v[4][1]}},
+    {{KICK_I_ROWS[4].v[0][0],KICK_I_ROWS[4].v[0][1]},{KICK_I_ROWS[4].v[1][0],KICK_I_ROWS[4].v[1][1]},{KICK_I_ROWS[4].v[2][0],KICK_I_ROWS[4].v[2][1]},{KICK_I_ROWS[4].v[3][0],KICK_I_ROWS[4].v[3][1]},{KICK_I_ROWS[4].v[4][0],KICK_I_ROWS[4].v[4][1]}},
+    {{KICK_I_ROWS[5].v[0][0],KICK_I_ROWS[5].v[0][1]},{KICK_I_ROWS[5].v[1][0],KICK_I_ROWS[5].v[1][1]},{KICK_I_ROWS[5].v[2][0],KICK_I_ROWS[5].v[2][1]},{KICK_I_ROWS[5].v[3][0],KICK_I_ROWS[5].v[3][1]},{KICK_I_ROWS[5].v[4][0],KICK_I_ROWS[5].v[4][1]}},
+    {{KICK_I_ROWS[6].v[0][0],KICK_I_ROWS[6].v[0][1]},{KICK_I_ROWS[6].v[1][0],KICK_I_ROWS[6].v[1][1]},{KICK_I_ROWS[6].v[2][0],KICK_I_ROWS[6].v[2][1]},{KICK_I_ROWS[6].v[3][0],KICK_I_ROWS[6].v[3][1]},{KICK_I_ROWS[6].v[4][0],KICK_I_ROWS[6].v[4][1]}},
+    {{KICK_I_ROWS[7].v[0][0],KICK_I_ROWS[7].v[0][1]},{KICK_I_ROWS[7].v[1][0],KICK_I_ROWS[7].v[1][1]},{KICK_I_ROWS[7].v[2][0],KICK_I_ROWS[7].v[2][1]},{KICK_I_ROWS[7].v[3][0],KICK_I_ROWS[7].v[3][1]},{KICK_I_ROWS[7].v[4][0],KICK_I_ROWS[7].v[4][1]}}
+};
+
 
 const int8_t KICK_OTHER[8][5][2] = {
     {{0,0},{-1,0},{-1,1},{0,-2},{-1,-2}},
