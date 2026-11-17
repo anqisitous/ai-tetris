@@ -50,32 +50,43 @@ constexpr KickRow NegateRow(const KickRow& r) {
     }};
 }
 
-// Second base row (1>>2) uses a different recurrence, confirmed term-by-term:
+// Second base row (1>>2).
 //   x1, x2 are seeds; x_n = 1 - x_{n-1}
-//   y1 = y2 = 0
-//   y_n = (x_{n-2} + x_{n-1} - x_n) wrapped into [-2,2] via mod 3
-constexpr int8_t Mod3Center(int v) {
-    while (v > 2)  v -= 3;
-    while (v < -2) v += 3;
-    return static_cast<int8_t>(v);
-}
-
-constexpr KickRow GenIRow2(int8_t x1, int8_t x2) {
+//   y1 = y2 = y3 = 0; y4 is a seed; y5 = 1 - y4
+// (function version, verified against the official SRS table)
+constexpr KickRow GenIRow2(int8_t x1, int8_t x2, int8_t y4) {
     int8_t x3 = static_cast<int8_t>(1 - x2);
     int8_t x4 = static_cast<int8_t>(1 - x3);
     int8_t x5 = static_cast<int8_t>(1 - x4);
-    int8_t y3 = Mod3Center(x1 + x2 - x3);
-    int8_t y4 = Mod3Center(x2 + x3 - x4);
-    int8_t y5 = Mod3Center(x3 + x4 - x5);
-    return KickRow{{ {x1,0}, {x2,0}, {x3,y3}, {x4,y4}, {x5,y5} }};
+    int8_t y5 = static_cast<int8_t>(1 - y4);
+    return KickRow{{ {x1,0}, {x2,0}, {x3,0}, {x4,y4}, {x5,y5} }};
 }
+
+// ---- mod version (retired; kept for reference) ----
+//   y_n = (x_{n-2} + x_{n-1} - x_n) wrapped into [-2,2] via mod 3
+//
+// constexpr int8_t Mod3Center(int v) {
+//     while (v > 2)  v -= 3;
+//     while (v < -2) v += 3;
+//     return static_cast<int8_t>(v);
+// }
+//
+// constexpr KickRow GenIRow2(int8_t x1, int8_t x2) {
+//     int8_t x3 = static_cast<int8_t>(1 - x2);
+//     int8_t x4 = static_cast<int8_t>(1 - x3);
+//     int8_t x5 = static_cast<int8_t>(1 - x4);
+//     int8_t y3 = Mod3Center(x1 + x2 - x3);
+//     int8_t y4 = Mod3Center(x2 + x3 - x4);
+//     int8_t y5 = Mod3Center(x3 + x4 - x5);
+//     return KickRow{{ {x1,0}, {x2,0}, {x3,y3}, {x4,y4}, {x5,y5} }};
+// }
 
 // Two independent base rows exist (0>>1 and 1>>2); every other row is
 // either the negation of one of these or an exact reuse (verified against
 // the official SRS table: idx4==idx1, idx5==idx0, idx6==idx3, idx7==idx2).
 constexpr KickRow I_ROW_0_1 = GenIRow(0, -2, -1);   // 0>>1, seeds from user's derivation
 constexpr KickRow I_ROW_1_0 = NegateRow(I_ROW_0_1); // 1>>0
-constexpr KickRow I_ROW_1_2 = GenIRow2(0, -1);      // 1>>2, seeds from user's second derivation
+constexpr KickRow I_ROW_1_2 = GenIRow2(0, -1, 2);   // 1>>2, seeds from user's second derivation
 constexpr KickRow I_ROW_2_1 = NegateRow(I_ROW_1_2); // 2>>1
 
 // tableIdx layout: 0:0>>1 1:1>>0 2:1>>2 3:2>>1 4:2>>3 5:3>>2 6:3>>0 7:0>>3
@@ -86,38 +97,53 @@ constexpr KickRow KICK_I_ROWS[8] = {
     I_ROW_1_0, I_ROW_0_1, I_ROW_2_1, I_ROW_1_2
 };
 
-constexpr std::array<std::array<std::array<int8_t,2>,5>,8> BuildKickI() {
-    std::array<std::array<std::array<int8_t,2>,5>,8> out{};
-    for (int r = 0; r < 8; ++r)
-        for (int k = 0; k < 5; ++k) {
-            out[r][k][0] = KICK_I_ROWS[r].v[k][0];
-            out[r][k][1] = KICK_I_ROWS[r].v[k][1];
-        }
-    return out;
+// ---- J/L/S/T/Z (KICK_OTHER) : function version ----
+//   x1 = 0 (all rows start at {0,0}); dx is the seed
+//   {0,0}, {dx,0}, {dx,-dx}, {0,2*dx}, {dx,2*dx}
+constexpr KickRow GenOtherRow(int8_t dx) {
+    return KickRow{{
+        {0,0}, {dx,0},
+        {dx, static_cast<int8_t>(-dx)},
+        {0,  static_cast<int8_t>(2 * dx)},
+        {dx, static_cast<int8_t>(2 * dx)}
+    }};
 }
 
-const int8_t KICK_I[8][5][2] = {
-    {{KICK_I_ROWS[0].v[0][0],KICK_I_ROWS[0].v[0][1]},{KICK_I_ROWS[0].v[1][0],KICK_I_ROWS[0].v[1][1]},{KICK_I_ROWS[0].v[2][0],KICK_I_ROWS[0].v[2][1]},{KICK_I_ROWS[0].v[3][0],KICK_I_ROWS[0].v[3][1]},{KICK_I_ROWS[0].v[4][0],KICK_I_ROWS[0].v[4][1]}},
-    {{KICK_I_ROWS[1].v[0][0],KICK_I_ROWS[1].v[0][1]},{KICK_I_ROWS[1].v[1][0],KICK_I_ROWS[1].v[1][1]},{KICK_I_ROWS[1].v[2][0],KICK_I_ROWS[1].v[2][1]},{KICK_I_ROWS[1].v[3][0],KICK_I_ROWS[1].v[3][1]},{KICK_I_ROWS[1].v[4][0],KICK_I_ROWS[1].v[4][1]}},
-    {{KICK_I_ROWS[2].v[0][0],KICK_I_ROWS[2].v[0][1]},{KICK_I_ROWS[2].v[1][0],KICK_I_ROWS[2].v[1][1]},{KICK_I_ROWS[2].v[2][0],KICK_I_ROWS[2].v[2][1]},{KICK_I_ROWS[2].v[3][0],KICK_I_ROWS[2].v[3][1]},{KICK_I_ROWS[2].v[4][0],KICK_I_ROWS[2].v[4][1]}},
-    {{KICK_I_ROWS[3].v[0][0],KICK_I_ROWS[3].v[0][1]},{KICK_I_ROWS[3].v[1][0],KICK_I_ROWS[3].v[1][1]},{KICK_I_ROWS[3].v[2][0],KICK_I_ROWS[3].v[2][1]},{KICK_I_ROWS[3].v[3][0],KICK_I_ROWS[3].v[3][1]},{KICK_I_ROWS[3].v[4][0],KICK_I_ROWS[3].v[4][1]}},
-    {{KICK_I_ROWS[4].v[0][0],KICK_I_ROWS[4].v[0][1]},{KICK_I_ROWS[4].v[1][0],KICK_I_ROWS[4].v[1][1]},{KICK_I_ROWS[4].v[2][0],KICK_I_ROWS[4].v[2][1]},{KICK_I_ROWS[4].v[3][0],KICK_I_ROWS[4].v[3][1]},{KICK_I_ROWS[4].v[4][0],KICK_I_ROWS[4].v[4][1]}},
-    {{KICK_I_ROWS[5].v[0][0],KICK_I_ROWS[5].v[0][1]},{KICK_I_ROWS[5].v[1][0],KICK_I_ROWS[5].v[1][1]},{KICK_I_ROWS[5].v[2][0],KICK_I_ROWS[5].v[2][1]},{KICK_I_ROWS[5].v[3][0],KICK_I_ROWS[5].v[3][1]},{KICK_I_ROWS[5].v[4][0],KICK_I_ROWS[5].v[4][1]}},
-    {{KICK_I_ROWS[6].v[0][0],KICK_I_ROWS[6].v[0][1]},{KICK_I_ROWS[6].v[1][0],KICK_I_ROWS[6].v[1][1]},{KICK_I_ROWS[6].v[2][0],KICK_I_ROWS[6].v[2][1]},{KICK_I_ROWS[6].v[3][0],KICK_I_ROWS[6].v[3][1]},{KICK_I_ROWS[6].v[4][0],KICK_I_ROWS[6].v[4][1]}},
-    {{KICK_I_ROWS[7].v[0][0],KICK_I_ROWS[7].v[0][1]},{KICK_I_ROWS[7].v[1][0],KICK_I_ROWS[7].v[1][1]},{KICK_I_ROWS[7].v[2][0],KICK_I_ROWS[7].v[2][1]},{KICK_I_ROWS[7].v[3][0],KICK_I_ROWS[7].v[3][1]},{KICK_I_ROWS[7].v[4][0],KICK_I_ROWS[7].v[4][1]}}
+constexpr KickRow FlipYRow(const KickRow& r) {
+    return KickRow{{
+        {r.v[0][0], static_cast<int8_t>(-r.v[0][1])},
+        {r.v[1][0], static_cast<int8_t>(-r.v[1][1])},
+        {r.v[2][0], static_cast<int8_t>(-r.v[2][1])},
+        {r.v[3][0], static_cast<int8_t>(-r.v[3][1])},
+        {r.v[4][0], static_cast<int8_t>(-r.v[4][1])}
+    }};
+}
+
+// tableIdx layout is the same as KICK_I_ROWS.
+// idx2/3 reuse idx1/0, idx6 reuses idx5, idx7 reuses idx4.
+constexpr KickRow OTHER_ROW_0_1 = GenOtherRow(-1);            // 0>>1
+constexpr KickRow OTHER_ROW_1_0 = NegateRow(OTHER_ROW_0_1);   // 1>>0
+constexpr KickRow OTHER_ROW_2_3 = FlipYRow(OTHER_ROW_1_0);    // 2>>3
+constexpr KickRow OTHER_ROW_3_2 = NegateRow(OTHER_ROW_2_3);   // 3>>2
+
+constexpr KickRow KICK_OTHER_ROWS[8] = {
+    OTHER_ROW_0_1, OTHER_ROW_1_0, OTHER_ROW_1_0, OTHER_ROW_0_1,
+    OTHER_ROW_2_3, OTHER_ROW_3_2, OTHER_ROW_3_2, OTHER_ROW_2_3
 };
 
+// KickRow -> int8_t[5][2] (public layout stays unchanged)
+#define KICK_ROW_INIT(R) \
+    {{(R).v[0][0],(R).v[0][1]},{(R).v[1][0],(R).v[1][1]},{(R).v[2][0],(R).v[2][1]}, \
+     {(R).v[3][0],(R).v[3][1]},{(R).v[4][0],(R).v[4][1]}}
+#define KICK_TABLE_INIT(ROWS) \
+    { KICK_ROW_INIT(ROWS[0]), KICK_ROW_INIT(ROWS[1]), KICK_ROW_INIT(ROWS[2]), KICK_ROW_INIT(ROWS[3]), \
+      KICK_ROW_INIT(ROWS[4]), KICK_ROW_INIT(ROWS[5]), KICK_ROW_INIT(ROWS[6]), KICK_ROW_INIT(ROWS[7]) }
 
-const int8_t KICK_OTHER[8][5][2] = {
-    {{0,0},{-1,0},{-1,1},{0,-2},{-1,-2}},
-    {{0,0},{1,0},{1,-1},{0,2},{1,2}},
-    {{0,0},{1,0},{1,-1},{0,2},{1,2}},
-    {{0,0},{-1,0},{-1,1},{0,-2},{-1,-2}},
-    {{0,0},{1,0},{1,1},{0,-2},{1,-2}},
-    {{0,0},{-1,0},{-1,-1},{0,2},{-1,2}},
-    {{0,0},{-1,0},{-1,-1},{0,2},{-1,2}},
-    {{0,0},{1,0},{1,1},{0,-2},{1,-2}}
-};
+const int8_t KICK_I[8][5][2]     = KICK_TABLE_INIT(KICK_I_ROWS);
+const int8_t KICK_OTHER[8][5][2] = KICK_TABLE_INIT(KICK_OTHER_ROWS);
+
+#undef KICK_TABLE_INIT
+#undef KICK_ROW_INIT
 
 bool ShiftRowMask(uint16_t rowMask, int x, uint16_t& out) {
     if (rowMask == 0) { out = 0; return true; }
